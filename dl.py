@@ -97,6 +97,16 @@ def on_postprocess(info):
     except Exception as e:
         print(f"Failed to move video {vid_state.tmp_file} -> {new_video_path}: {e}")
 
+    live_chat_filename = f"{vid_state.vid}.live_chat.json"
+    live_chat_renamed = "live_chat.json"
+    live_chat_path = os.path.join(vid_state.video_dir, live_chat_renamed)
+    if os.path.exists(live_chat_filename):
+        try:
+            shutil.move(live_chat_filename, live_chat_path)
+            print("Saved live chat:", live_chat_path)
+        except Exception as e:
+            print(f"Failed to move live chat {vid_state.tmp_file.replace(f".{vid_state.ext}", '.live_chat.json')} -> {live_chat_path}: {e}")
+
 
 
 def postprocess_subs(info):
