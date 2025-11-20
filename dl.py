@@ -1,14 +1,11 @@
 import glob
-from multiprocessing import process
 import shutil
 import subprocess
-import sys
 import os
 import re
 import pprint
 import argparse
 
-from typing import Any, Dict
 from datetime import datetime
 from yt_dlp import YoutubeDL
 
@@ -27,7 +24,10 @@ class YTArcArgumentParser(argparse.ArgumentParser):
 
 
 def sanitize(name):
-    return re.sub(r'[\\/*?:"<>|]', "_", name)
+    pass1 = re.sub(r'[\\/*:"<>|]', "_", name)
+    # replace ? with nothing
+    pass2 = re.sub(r'\?', '', pass1)
+    return pass2
 
 class ChannelInfo:
     display_name: str = ""
@@ -51,10 +51,10 @@ class CurrentVideoState:
         self.ext = ""
 
 def categorize(info):
-    duration = info.get("duration")
     live_status = info.get("live_status")
+    is_short = "short" in info.get("media_type")
 
-    if duration < 60:
+    if is_short:
         return "shorts"
     if live_status == "was_live":
         return "vods"
@@ -86,7 +86,8 @@ def on_postprocess(info):
 
     # Each video has it's own folder.
     video_dir_name = f"{date} - {title} [{vid_state.vid}]"
-    vid_state.video_dir = os.path.join(channel_info.display_name, folder, video_dir_name)
+    channel_root = os.path.join(args.out, sanitize(channel_info.display_name))
+    vid_state.video_dir = os.path.join(channel_root, folder, video_dir_name)
     os.makedirs(vid_state.video_dir, exist_ok=True)
 
     video_filename = f"{title}.{vid_state.ext}"
@@ -105,9 +106,15 @@ def on_postprocess(info):
             shutil.move(live_chat_filename, live_chat_path)
             print("Saved live chat:", live_chat_path)
         except Exception as e:
-            print(f"Failed to move live chat {vid_state.tmp_file.replace(f".{vid_state.ext}", '.live_chat.json')} -> {live_chat_path}: {e}")
+            print(f"Failed to move live chat {vid_state.tmp_file.replace(f'.{vid_state.ext}', '.live_chat.json')} -> {live_chat_path}: {e}")
+            pass
 
-
+def filter_video_ids(entries):
+    for entry in entries:
+        if (entry.get('_type') == 'url') and ('id' in entry) and ('youtube' in entry.get('ie_key','').lower()):
+            yield entry['id']
+        elif entry.get('entries'):
+            yield from filter_video_ids(entry['entries'])
 
 def postprocess_subs(info):
     pattern = os.path.join(vid_state.tmp_dir, f"{vid_state.vid}.*.srv3")
@@ -160,6 +167,7 @@ parser = YTArcArgumentParser(
 )
 main_group = parser.add_mutually_exclusive_group(required=True)
 main_group.add_argument("--channel", help="YouTube channel handle (with @)")
+main_group.add_argument("--shorts", help="Download all Shorts from a creator (with @)")
 main_group.add_argument("--video", help="YouTube video slug (multiple accepted, comma separated)")
 
 parser.add_argument("--out", help="Output directory (optional)")
@@ -174,17 +182,8 @@ ydl_sub_opts = {
     "live_chat": True
 }
 
-ydl_opts = {
-    # "download_archive": "downloaded.txt",
-    "ignoreerrors": True,
-    "outtmpl": "%(id)s.%(ext)s",
-    "postprocessor_hooks": [on_postprocess, postprocess_subs],
-}
-
-if args.subs:
-    ydl_opts.update(ydl_sub_opts)
-
 TARGET = ""
+DIR_NAME=""
 
 if args.channel:
     TARGET = args.channel
@@ -195,8 +194,22 @@ if args.video:
     TARGET = f"watch?v={args.video[0]}"
     DIR_NAME = args.out if args.out else args.video
 
+if args.shorts:
+    TARGET = args.shorts + "/shorts"
+    DIR_NAME = args.out if args.out else "shorts"
+
 if args.out is None:
     args.out = f"{DIR_NAME}/"
+
+ydl_opts = {
+    "download_archive": f"{DIR_NAME}/downloaded.txt",
+    "ignoreerrors": True,
+    "outtmpl": "%(id)s.%(ext)s",
+    "postprocessor_hooks": [on_postprocess, postprocess_subs],
+}
+
+if args.subs:
+    ydl_opts.update(ydl_sub_opts)
 
 TARGET_URL = f"https://www.youtube.com/{TARGET}"
 
@@ -212,15 +225,8 @@ with YoutubeDL({"extract_flat": True, "quiet": True}) as y:
 
     video_list = []
 
-    if args.channel:
-        def collect_ids(entries):
-            for e in entries:
-                if e.get('_type') == 'url' and 'id' in e and 'youtube' in e.get('ie_key','').lower():
-                    yield e['id']
-                elif e.get('entries'):
-                    yield from collect_ids(e['entries'])
-
-        video_list = list(collect_ids(info.get("entries", [])))
+    if args.channel or args.shorts:
+        video_list = list(filter_video_ids(info.get("entries", [])))
 
     if args.video:
         video_list = args.video[:]
