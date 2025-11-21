@@ -72,7 +72,7 @@ def on_postprocess(info):
 
     data = info["info_dict"]
 
-    vid_state.tmp_file = data["_filename"]
+    vid_state.tmp_file = data["filepath"]
     vid_state.tmp_dir = os.path.dirname(vid_state.tmp_file)
 
     folder = categorize(data)
@@ -82,7 +82,7 @@ def on_postprocess(info):
 
     title = sanitize(data.get("title", "unknown-title"))
     vid_state.vid = data.get("id")
-    vid_state.ext = data.get("ext")
+    vid_state.ext = data["filepath"].split(".")[-1]
 
     # Each video has it's own folder.
     video_dir_name = f"{date} - {title} [{vid_state.vid}]"
@@ -205,6 +205,12 @@ ydl_opts = {
     "download_archive": f"{DIR_NAME}/downloaded.txt",
     "ignoreerrors": True,
     "outtmpl": "%(id)s.%(ext)s",
+    "remux_video": "mkv",
+    "merge_output_format": "mkv",
+    "postprocessors": [
+        {"key": "FFmpegMetadata"},
+        {"key": "EmbedThumbnail"},
+    ],
     "postprocessor_hooks": [on_postprocess, postprocess_subs],
 }
 
