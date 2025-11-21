@@ -170,6 +170,7 @@ main_group.add_argument("--channel", help="YouTube channel handle (with @)")
 main_group.add_argument("--shorts", help="Download all Shorts from a creator (with @)")
 main_group.add_argument("--video", help="YouTube video slug (multiple accepted, comma separated)")
 
+parser.add_argument("--no-cache", help="Don't keep a list of downloaded videos", default=False, action="store_true")
 parser.add_argument("--out", help="Output directory (optional)")
 parser.add_argument("--subs", help="Download subtitles", default=False, action="store_true")
 
@@ -216,6 +217,10 @@ ydl_opts = {
 
 if args.subs:
     ydl_opts.update(ydl_sub_opts)
+
+if args.no_cache:
+    # Clear if we disable caching
+    ydl_opts.pop("download_archive", None)
 
 TARGET_URL = f"https://www.youtube.com/{TARGET}"
 
