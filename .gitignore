@@ -1,3 +1,6 @@
 venv
 sample_files/
 yt/
+logs/
+**/**/__pycache__/
+**/**/*.pyc
