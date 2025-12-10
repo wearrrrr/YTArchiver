@@ -43,6 +43,18 @@ This is a simple script to archive YouTube videos and channels!
 
 yt-dlp output is redirected to `logs/ytarchiver.log` by default. Override this path with `--log-file` if you prefer a different destination.
 
+## Web UI (Flask)
+
+Prefer a browser experience? Install Flask (`pip install -r requirements.txt` already covers it) and launch the local dashboard:
+
+```bash
+FLASK_APP=webapp.app flask run --reload
+# or
+python -m flask --app webapp.app run --reload
+```
+
+The page (http://localhost:5000/) lets you start channel/shorts/video jobs with the same options as the CLI. Each submission becomes a queued job, writes its own log file under `logs/`, and exposes a `/jobs/<id>.json` endpoint you can poll for status. Jobs currently run sequentially (matching the CLI behavior), so submit them in the order you want them executed.
+
 # Fancy CLI display
 
 Each download renders a colorized progress banner that shows the queue position, channel name, ID, duration, and canonical URL. The console clears between items for a dashboard-like feel; disable that behavior with `--no-clear` if you prefer a scrollback log.

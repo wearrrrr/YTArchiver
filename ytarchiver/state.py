@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any, Mapping, Optional
 
 
 @dataclass
@@ -36,6 +36,8 @@ class ProgressState:
     last_emit: float = 0.0
     last_render_len: int = 0
     inline_active: bool = False
+    batch_index: int = 0
+    batch_total: int = 0
 
 
 @dataclass
@@ -64,3 +66,23 @@ class CurrentVideoState:
         self.ext = ""
         self.current_stage = "Idle"
         self.stage_detail = ""
+
+
+def serialize_video_task(task: VideoTask) -> dict:
+    return {
+        "video_id": task.video_id,
+        "title": task.title,
+        "duration": task.duration,
+        "uploader": task.uploader,
+        "url": task.url,
+    }
+
+
+def deserialize_video_task(payload: Mapping[str, Any]) -> VideoTask:
+    return VideoTask(
+        video_id=str(payload.get("video_id", "")),
+        title=str(payload.get("title", "")),
+        duration=payload.get("duration"),
+        uploader=str(payload.get("uploader", "")),
+        url=str(payload.get("url", "")),
+    )

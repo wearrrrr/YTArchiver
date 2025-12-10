@@ -1,5 +1,7 @@
+import logging
 import time
-from typing import Optional
+from threading import Lock
+from typing import Callable, Optional
 
 from .console import ENABLE_TTY, colorize, format_bytes, format_eta
 from .context import video_state
@@ -7,8 +9,32 @@ from .helpers import short_name
 from .state import ProgressState
 
 CYAN = "\033[96m"
+LOG = logging.getLogger("ytarchiver.progress")
 
 progress_state = ProgressState()
+_progress_sinks: list[Callable[[dict], None]] = []
+_sinks_lock = Lock()
+
+
+def register_progress_sink(callback: Callable[[dict], None]):
+    with _sinks_lock:
+        _progress_sinks.append(callback)
+
+
+def unregister_progress_sink(callback: Callable[[dict], None]):
+    with _sinks_lock:
+        if callback in _progress_sinks:
+            _progress_sinks.remove(callback)
+
+
+def _broadcast_progress(payload: dict):
+    with _sinks_lock:
+        sinks = list(_progress_sinks)
+    for sink in sinks:
+        try:
+            sink(payload)
+        except Exception as exc:  # noqa: BLE001
+            LOG.debug("Progress sink failed: %s", exc)
 
 
 def reset_progress_state(label: str = "Queued", detail: str = ""):
@@ -23,6 +49,8 @@ def reset_progress_state(label: str = "Queued", detail: str = ""):
     progress_state.last_emit = 0.0
     progress_state.last_render_len = 0
     progress_state.inline_active = False
+    progress_state.batch_index = 0
+    progress_state.batch_total = 0
 
 
 def _emit_progress_line(force: bool = False, final: bool = False):
@@ -45,7 +73,12 @@ def _emit_progress_line(force: bool = False, final: bool = False):
         progress_state.last_percent = percent
 
     label = progress_state.label or "Status"
-    parts = [colorize(f"[{label}]", CYAN)]
+    label_display = f"{label}..." if progress_state.show_transfer else label
+    parts: list[str] = []
+    if progress_state.batch_total:
+        idx = max(1, progress_state.batch_index or 1)
+        parts.append(f"[{idx}/{progress_state.batch_total}]")
+    parts.append(colorize(f"[{label_display}]", CYAN))
 
     if progress_state.show_transfer:
         percent_str = f"{percent:3d}%" if percent is not None else "--%"
@@ -62,6 +95,19 @@ def _emit_progress_line(force: bool = False, final: bool = False):
         parts.append(f"— {progress_state.detail}")
 
     line = " ".join(parts)
+    payload = {
+        "label": progress_state.label,
+        "detail": progress_state.detail,
+        "percent": percent,
+        "downloaded": progress_state.downloaded_bytes,
+        "total": progress_state.total_bytes,
+        "speed": progress_state.speed,
+        "eta": progress_state.eta,
+        "show_transfer": progress_state.show_transfer,
+        "batch_index": progress_state.batch_index,
+        "batch_total": progress_state.batch_total,
+        "timestamp": now,
+    }
 
     if ENABLE_TTY and progress_state.show_transfer:
         padding = max(0, progress_state.last_render_len - len(line))
@@ -78,6 +124,8 @@ def _emit_progress_line(force: bool = False, final: bool = False):
             progress_state.inline_active = False
             progress_state.last_render_len = 0
         print(line)
+
+    _broadcast_progress(payload)
 
 
 def set_stage(label: str, detail: str = "", show_transfer: Optional[bool] = None, force: bool = True):
