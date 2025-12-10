@@ -3,6 +3,8 @@ import time
 from threading import Lock
 from typing import Callable, Optional
 
+from yt_dlp.utils import DownloadCancelled
+
 from .console import ENABLE_TTY, colorize, format_bytes, format_eta
 from .context import video_state
 from .helpers import short_name
@@ -14,6 +16,7 @@ LOG = logging.getLogger("ytarchiver.progress")
 progress_state = ProgressState()
 _progress_sinks: list[Callable[[dict], None]] = []
 _sinks_lock = Lock()
+_interrupt_probe: Callable[[], str | None] | None = None
 
 
 def register_progress_sink(callback: Callable[[dict], None]):
@@ -27,13 +30,19 @@ def unregister_progress_sink(callback: Callable[[dict], None]):
             _progress_sinks.remove(callback)
 
 
+def bind_interrupt_probe(callback: Callable[[], str | None] | None):
+    LOG.info("Binding interrupt probe")
+    global _interrupt_probe
+    _interrupt_probe = callback
+
+
 def _broadcast_progress(payload: dict):
     with _sinks_lock:
         sinks = list(_progress_sinks)
     for sink in sinks:
         try:
             sink(payload)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             LOG.debug("Progress sink failed: %s", exc)
 
 
@@ -147,6 +156,16 @@ def set_stage(label: str, detail: str = "", show_transfer: Optional[bool] = None
 
 
 def progress_hook(status: dict):
+    if _interrupt_probe:
+        try:
+            reason = _interrupt_probe()
+            LOG.debug(reason)
+        except Exception as exc:  # pragma: no cover - diagnostic path
+            LOG.debug("Interrupt probe callable failed: %s", exc)
+            reason = None
+        if reason:
+            LOG.info("Cancelling download via interrupt probe (%s)", reason)
+            raise DownloadCancelled(reason)
     state = status.get("status")
     filename = short_name(status.get("filename"))
     if state == "downloading":

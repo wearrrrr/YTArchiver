@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable, List, Sequence
 
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadCancelled
 
 from .console import render_task_banner
 from .context import channel_info, video_state
@@ -47,6 +48,11 @@ class JobControl:
     def pending_reason(self) -> str | None:
         with self._lock:
             return self._reason
+
+    def raise_if_requested(self):
+        reason = self.pending_reason()
+        if reason:
+            raise JobInterrupted(reason)
 
 
 @dataclass
@@ -221,6 +227,11 @@ def _run_downloads(
                 ydl.download([video_url])
             target_path = str(video_state.video_dir) if video_state.video_dir else video_url
             set_stage("Completed", f"Saved to {target_path}", show_transfer=False)
+        except JobInterrupted:
+            raise
+        except DownloadCancelled as cancel_exc:
+            reason = job_control.pending_reason() if job_control else None
+            raise JobInterrupted(reason or str(cancel_exc)) from cancel_exc
         except Exception as exc:  # noqa: BLE001
             set_stage("Error", str(exc), show_transfer=False)
             LOG.error("Failed to download %s (%s)", video_url, exc)

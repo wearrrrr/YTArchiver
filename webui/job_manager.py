@@ -1,18 +1,27 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import uuid
+from collections import deque
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable
+from typing import Any, Callable, Iterable
 
-from ytarchiver.progress import register_progress_sink, unregister_progress_sink
+from ytarchiver.progress import bind_interrupt_probe, register_progress_sink, unregister_progress_sink
 from ytarchiver.service import ArchiveConfig, JobControl, JobInterrupted, prepare_tasks, run_archive
 from ytarchiver.state import deserialize_video_task, serialize_video_task
 
 
 JobListener = Callable[[dict], None]
+LOG = logging.getLogger("ytarchiver.webui.jobs")
+if not LOG.handlers:
+	handler = logging.StreamHandler()
+	handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+	LOG.addHandler(handler)
+LOG.setLevel(logging.INFO)
+LOG.propagate = False
 
 
 def _utc_now() -> str:
@@ -33,6 +42,23 @@ def _default_progress() -> dict:
 		"batch_total": None,
 		"updated": _utc_now(),
 	}
+
+
+def _read_log_tail(log_path: str | Path | None, max_lines: int) -> list[str]:
+	max_lines = max(1, min(max_lines, 1000))
+	if not log_path:
+		return ["Log file not specified."]
+	path = Path(log_path)
+	if not path.exists():
+		return ["Log file not created yet."]
+	buffer: deque[str] = deque(maxlen=max_lines)
+	try:
+		with path.open("r", encoding="utf-8", errors="ignore") as handle:
+			for line in handle:
+				buffer.append(line.rstrip("\n"))
+	except OSError:
+		return ["Unable to read log file."]
+	return list(buffer)
 
 
 def _config_to_dict(config: ArchiveConfig) -> dict:
@@ -158,6 +184,29 @@ class JobManager:
 			job = self.jobs.get(job_id)
 			return self._job_payload(job) if job else None
 
+	def serialize_job(self, job_id: str, *, include_log: bool = False, max_lines: int = 40) -> dict | None:
+		job_payload = self.get_job(job_id)
+		if not job_payload:
+			return None
+		if include_log:
+			lines = _read_log_tail(job_payload.get("log_file"), max_lines)
+			job_payload["tail"] = lines
+			job_payload["tail_text"] = "\n".join(lines)
+		return job_payload
+
+	def log_payload(self, job_id: str, max_lines: int = 200) -> dict:
+		job = self.get_job(job_id)
+		if not job:
+			raise ValueError("Job not found")
+		lines = _read_log_tail(job.get("log_file"), max_lines)
+		return {
+			"job_id": job_id,
+			"status": job.get("status"),
+			"progress": job.get("progress"),
+			"tail": lines,
+			"tail_text": "\n".join(lines),
+		}
+
 	def create_job(self, config: ArchiveConfig, log_override: Path | None = None) -> str:
 		tasks, channel_meta = prepare_tasks(config)
 		job_id = str(uuid.uuid4())
@@ -202,9 +251,11 @@ class JobManager:
 			if status == "running":
 				control = self.job_controls.get(job_id)
 				if control:
+					LOG.info("Pause requested for running job %s", job_id)
 					control.request_pause()
 				return
 			if status == "queued":
+				LOG.info("Pause requested for queued job %s", job_id)
 				self._remove_from_queue(job_id)
 				job["status"] = "paused"
 				job["updated"] = _utc_now()
@@ -222,9 +273,11 @@ class JobManager:
 			if status == "running":
 				control = self.job_controls.get(job_id)
 				if control:
+					LOG.info("Stop requested for running job %s", job_id)
 					control.request_stop()
 				return
 			if status in {"queued", "paused"}:
+				LOG.info("Stop requested for queued/paused job %s", job_id)
 				self._remove_from_queue(job_id)
 				job["status"] = "stopped"
 				job["updated"] = _utc_now()
@@ -327,6 +380,7 @@ class JobManager:
 					job["error"] = None
 					job["updated"] = _utc_now()
 					control = JobControl()
+					LOG.info("Created JobControl for job %s", job_id)
 					self.job_controls[job_id] = control
 					self.active_job = job_id
 					self._persist_unlocked()
@@ -336,6 +390,7 @@ class JobManager:
 
 	def _execute_job(self, job_id: str, control: JobControl | None):
 		progress_callback = None
+		interrupt_bound = False
 		try:
 			with self.lock:
 				job = self.jobs.get(job_id)
@@ -390,6 +445,18 @@ class JobManager:
 
 			progress_callback = progress_sink
 			register_progress_sink(progress_callback)
+			if control:
+				probe_state = {"notified": False}
+				def interrupt_probe():
+					reason = control.pending_reason()
+					if reason and not probe_state["notified"]:
+						LOG.info("Interrupt probe triggered for job %s (%s)", job_id, reason)
+						probe_state["notified"] = True
+					return reason
+				bind_interrupt_probe(interrupt_probe)
+				interrupt_bound = True
+			else:
+				LOG.warning("Job %s is running without a JobControl; interrupts disabled", job_id)
 			run_archive(
 				config,
 				tasks=tasks,
@@ -449,5 +516,7 @@ class JobManager:
 					self._persist_unlocked()
 					self._notify_unlocked(job)
 		finally:
+			if interrupt_bound:
+				bind_interrupt_probe(None)
 			if progress_callback:
 				unregister_progress_sink(progress_callback)

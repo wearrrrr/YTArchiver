@@ -1,17 +1,20 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
 * {
     box-sizing: border-box;
-    font-family: "Inter", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+    font-family: "Space Grotesk", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
 }
 
 body {
     margin: 0;
-    padding: 2rem;
-    background: #0b0c10;
+    padding: 2.5rem;
+    background: radial-gradient(circle at 15% 20%, rgba(255, 81, 47, 0.18), transparent 50%),
+        radial-gradient(circle at 80% 0%, rgba(76, 201, 255, 0.18), transparent 45%),
+        #0b0c10;
     color: #f4f4f4;
 }
 
 main {
-    max-width: 1280px;
     margin: 0 auto;
 }
 
@@ -25,7 +28,7 @@ a {
 
 .panel {
     background: #15171f;
-    padding: 1.5rem;
+    padding: 2rem;
     border-radius: 12px;
     margin-bottom: 1.5rem;
     box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
@@ -86,11 +89,77 @@ a {
     gap: 0.5rem;
 }
 
-.field-row.grid label {
+.field-row.grid {
+    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.field-row.grid .toggle {
     display: flex;
-    gap: 0.35rem;
     align-items: center;
-    font-weight: 400;
+    gap: 0.65rem;
+    padding: 0.5rem 0.75rem;
+    border-radius: 12px;
+    border: 1px solid #2a2f46;
+    background: #0f111a;
+    font-weight: 500;
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+    transition: border-color 0.2s ease, background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.field-row.grid .toggle:hover {
+    border-color: #4cc9ff;
+}
+
+.field-row.grid .toggle input {
+    position: absolute;
+    opacity: 0;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    border: 0;
+    padding: 0;
+    clip: rect(0 0 0 0);
+}
+
+.toggle-track {
+    flex-shrink: 0;
+    width: 44px;
+    height: 24px;
+    border-radius: 999px;
+    background: #2a2f46;
+    position: relative;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+}
+
+.toggle-thumb {
+    position: absolute;
+    top: 3px;
+    left: 4px;
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    background: #f4f4f4;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.35);
+    transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.field-row.grid .toggle input:checked + .toggle-track {
+    background: #4cc9ff;
+}
+
+.field-row.grid .toggle input:checked + .toggle-track .toggle-thumb {
+    transform: translateX(18px);
+    background: #051423;
+}
+
+.field-row.grid .toggle input:focus-visible + .toggle-track {
+    box-shadow: 0 0 0 2px rgba(76, 201, 255, 0.5);
+}
+
+.toggle-label {
+    flex: 1;
 }
 
 .alert {
@@ -130,12 +199,14 @@ a {
 .job-row {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-    gap: 0.75rem;
-    padding: 0.75rem 1rem;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
     background: rgba(255, 255, 255, 0.04);
-    border-radius: 10px;
+    border-radius: 12px;
     align-items: center;
     text-align: center;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    font-size: 0.9rem;
 }
 
 .job-row.header {
@@ -146,9 +217,8 @@ a {
 }
 
 .status {
-    padding: 0.25rem 0.65rem;
+    padding: 0.25rem;
     border-radius: 999px;
-    text-align: center;
     font-size: 0.9rem;
 }
 
@@ -165,18 +235,23 @@ a {
 }
 
 .control-cell {
-    min-width: 180px;
+    display: flex;
+    justify-content: center;
 }
 
 .control-group {
     display: flex;
-    flex-wrap: wrap;
+    flex-direction: column;
     gap: 0.35rem;
-    justify-content: center;
+    width: 90%;
+}
+
+.control-group .control-btn {
+    width: 100%;
 }
 
 .control-btn {
-    border-radius: 999px;
+    border-radius: 6px;
     border: 1px solid rgba(255, 255, 255, 0.3);
     background: transparent;
     color: #f4f4f4;
@@ -210,8 +285,12 @@ a {
     cursor: not-allowed;
 }
 
+.job-row.active-log {
+    box-shadow: 0 0 0 2px rgba(76, 201, 255, 0.6);
+}
+
 .mono {
-    font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, monospace;
+    font-family: "JetBrains Mono", "Space Mono", "SFMono-Regular", ui-monospace, monospace;
     font-size: 0.95rem;
 }
 
@@ -245,6 +324,14 @@ a {
     font-size: 0.85rem;
 }
 
+.log-panel {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.muted {
+    color: #7c839f;
+}
+
 .log-panel #log-meta {
     margin: 0;
     color: #a0a8c3;
@@ -267,5 +354,6 @@ a {
 
 @media (max-width: 900px) {
     body { padding: 1rem; }
+    .panel { padding: 1.25rem; }
     .job-row { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
 }

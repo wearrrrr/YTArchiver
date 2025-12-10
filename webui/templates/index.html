@@ -31,6 +31,32 @@
         {%- endif -%}
     </div>
     {%- endmacro %}
+
+    {% macro progress_text(progress) -%}
+        {%- if not progress -%}
+            —
+        {%- else -%}
+            {%- set total = progress.batch_total or 0 -%}
+            {%- set prefix = '' -%}
+            {%- if total -%}
+                {%- set index = progress.batch_index or 1 -%}
+                {%- set prefix = '[' ~ index ~ '/' ~ total ~ '] ' -%}
+            {%- endif -%}
+            {%- set label = progress.label or '' -%}
+            {%- if progress.show_transfer -%}
+                {%- set label = (label ~ '…') -%}
+            {%- endif -%}
+            {%- set content = (prefix ~ label)|trim -%}
+            {%- if content -%}
+                {{ content }}{% if progress.percent is not none %} {{ progress.percent }}%{% endif %}
+            {%- elif progress.percent is not none -%}
+                {{ progress.percent }}%
+            {%- else -%}
+                —
+            {%- endif -%}
+        {%- endif -%}
+    {%- endmacro %}
+
     <main>
         <header>
             <h1>YTArchiver Dashboard</h1>
@@ -74,9 +100,21 @@
                 </div>
 
                 <div class="field-row grid">
-                    <label><input type="checkbox" name="subs" /> Download subtitles</label>
-                    <label><input type="checkbox" name="no_cache" /> Disable archive cache</label>
-                    <label><input type="checkbox" name="no_clear" /> Disable console clearing</label>
+                    <label class="toggle">
+                        <input type="checkbox" name="subs" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        <span class="toggle-label">Download subtitles</span>
+                    </label>
+                    <label class="toggle">
+                        <input type="checkbox" name="no_cache" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        <span class="toggle-label">Disable archive cache</span>
+                    </label>
+                    <label class="toggle">
+                        <input type="checkbox" name="no_clear" />
+                        <span class="toggle-track"><span class="toggle-thumb"></span></span>
+                        <span class="toggle-label">Disable console clearing</span>
+                    </label>
                 </div>
 
                 <div class="field-row">
@@ -130,216 +168,471 @@
                                 {{ job.handle or 'n/a' }}
                             {% endif %}
                         </span>
-                        <span class="progress-text" data-progress>
-                            {% if progress %}
-                                {% set batch_total = progress.batch_total or 0 %}
-                                {% set prefix = '' %}
-                                {% if batch_total %}
-                                    {% set index = progress.batch_index or 1 %}
-                                    {% set prefix = '[' ~ index ~ '/' ~ batch_total ~ '] ' %}
-                                {% endif %}
-                                {% set base_label = progress.label or '' %}
-                                {% if progress.show_transfer %}
-                                    {% set base_label = base_label ~ '…' %}
-                                {% endif %}
-                                {% set headline = (prefix ~ base_label)|trim %}
-                                {% if headline %}
-                                    {{ headline }}{% if progress.percent is not none %} {{ progress.percent }}%{% endif %}
-                                {% elif progress.percent is not none %}
-                                    <script>
-                                        (function () {
-                                            const modeInputs = document.querySelectorAll('input[name="command"]');
-                                            const handleGroup = document.getElementById('handle-group');
-                                            const videoGroup = document.getElementById('video-group');
+                        <span class="progress-text" data-progress>{{ progress_text(progress) }}</span>
+                        <span data-role="error">{{ job.error or '—' }}</span>
+                        <span class="control-cell">
+                            {{ control_group(job) }}
+                        </span>
+                        <span>
+                            <button type="button" class="log-btn" data-log-button data-job-id="{{ job.id }}">View log</button>
+                        </span>
+                        <span data-role="api">
+                            <a href="{{ url_for('job_status', job_id=job.id) }}" target="_blank" rel="noopener">JSON</a>
+                        </span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </section>
 
-                                            function syncFields() {
-                                                const selected = document.querySelector('input[name="command"]:checked');
-                                                if (!selected) { return; }
-                                                const mode = selected.value;
-                                                handleGroup.style.display = mode === 'video' ? 'none' : 'block';
-                                                videoGroup.style.display = mode === 'video' ? 'block' : 'none';
-                                            }
+        <section class="panel log-panel">
+            <h2>Log Viewer</h2>
+            <p id="log-meta">Select a job to stream the latest 200 lines.</p>
+            <pre id="log-output">No job selected.</pre>
+        </section>
+    </main>
 
-                                            modeInputs.forEach((input) => input.addEventListener('change', syncFields));
-                                            syncFields();
+    <script>
+        (() => {
+            const modeInputs = document.querySelectorAll('input[name="command"]');
+            const handleGroup = document.getElementById('handle-group');
+            const videoGroup = document.getElementById('video-group');
+            const jobRows = document.getElementById('job-rows');
+            const emptyNote = document.getElementById('job-empty-note');
+            const jobForm = document.querySelector('.job-form');
+            const formStatus = document.getElementById('form-status');
+            const logOutput = document.getElementById('log-output');
+            const logMeta = document.getElementById('log-meta');
+            const jobState = new Map();
+            const pendingCommands = new Set();
+            const STATUS_CLASSES = ['queued', 'running', 'completed', 'failed', 'paused', 'stopped'];
+            const CONTROL_MAP = {
+                queued: [
+                    { label: 'Pause', action: 'pause' },
+                    { label: 'Stop', action: 'stop', tone: 'danger' },
+                    { label: 'Delete', action: 'delete', tone: 'muted' },
+                ],
+                running: [
+                    { label: 'Pause', action: 'pause' },
+                    { label: 'Stop', action: 'stop', tone: 'danger' },
+                ],
+                paused: [
+                    { label: 'Resume', action: 'resume', tone: 'primary' },
+                    { label: 'Stop', action: 'stop', tone: 'danger' },
+                    { label: 'Delete', action: 'delete', tone: 'muted' },
+                ],
+                stopped: [
+                    { label: 'Resume', action: 'resume', tone: 'primary' },
+                    { label: 'Delete', action: 'delete', tone: 'muted' },
+                ],
+                failed: [
+                    { label: 'Resume', action: 'resume', tone: 'primary' },
+                    { label: 'Delete', action: 'delete', tone: 'muted' },
+                ],
+                completed: [
+                    { label: 'Delete', action: 'delete', tone: 'muted' },
+                ],
+            };
 
-                                            const logOutput = document.getElementById('log-output');
-                                            const logMeta = document.getElementById('log-meta');
-                                            const jobRows = document.getElementById('job-rows');
-                                            const emptyNote = document.getElementById('job-empty-note');
-                                            const jobForm = document.querySelector('.job-form');
-                                            const formStatus = document.getElementById('form-status');
-                                            const wsProtocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
-                                            const wsUrl = `${wsProtocol}://${window.location.host}/ws`;
-                                            const jobState = new Map();
-                                            const pendingCommands = new Set();
-                                            const controlKey = (jobId, action) => `${jobId}:${action}`;
-                                            let socket = null;
-                                            try {
-                                                socket = new WebSocket(wsUrl);
-                                            } catch (error) {
-                                                console.warn('WebSocket unavailable', error);
-                                            }
-                                            const outboundQueue = [];
-                                            let activeJob = null;
-                                            let logRetryTimer = null;
+            const controlKey = (jobId, action) => `${jobId}:${action}`;
+            let socket = null;
+            let activeJob = null;
 
-                                            const CONTROL_MAP = {
-                                                queued: [
-                                                    { label: 'Pause', action: 'pause' },
-                                                    { label: 'Stop', action: 'stop', tone: 'danger' },
-                                                    { label: 'Delete', action: 'delete', tone: 'muted' },
-                                                ],
-                                                running: [
-                                                    { label: 'Pause', action: 'pause' },
-                                                    { label: 'Stop', action: 'stop', tone: 'danger' },
-                                                ],
-                                                paused: [
-                                                    { label: 'Resume', action: 'resume', tone: 'primary' },
-                                                    { label: 'Stop', action: 'stop', tone: 'danger' },
-                                                    { label: 'Delete', action: 'delete', tone: 'muted' },
-                                                ],
-                                                stopped: [
-                                                    { label: 'Resume', action: 'resume', tone: 'primary' },
-                                                    { label: 'Delete', action: 'delete', tone: 'muted' },
-                                                ],
-                                                failed: [
-                                                    { label: 'Resume', action: 'resume', tone: 'primary' },
-                                                    { label: 'Delete', action: 'delete', tone: 'muted' },
-                                                ],
-                                                completed: [
-                                                    { label: 'Delete', action: 'delete', tone: 'muted' },
-                                                ],
-                                            };
-                                            const STATUS_CLASSES = ['queued', 'running', 'completed', 'failed', 'paused', 'stopped'];
+            function syncFields() {
+                const selected = document.querySelector('input[name="command"]:checked');
+                if (!selected) { return; }
+                const mode = selected.value;
+                if (handleGroup) {
+                    handleGroup.style.display = mode === 'video' ? 'none' : 'block';
+                }
+                if (videoGroup) {
+                    videoGroup.style.display = mode === 'video' ? 'block' : 'none';
+                }
+            }
 
-                                            function setFormStatus(message, state = 'info') {
-                                                if (!formStatus) { return; }
-                                                if (!message) {
-                                                    formStatus.textContent = '';
-                                                    formStatus.hidden = true;
-                                                    return;
-                                                }
-                                                formStatus.textContent = message;
-                                                formStatus.hidden = false;
-                                                formStatus.dataset.state = state;
-                                            }
+            modeInputs.forEach((input) => input.addEventListener('change', syncFields));
+            syncFields();
 
-                                            if (emptyNote) {
-                                                emptyNote.hidden = jobRows && jobRows.children.length > 0;
-                                            }
+            function setFormStatus(message, state = 'info') {
+                if (!formStatus) { return; }
+                if (!message) {
+                    formStatus.textContent = '';
+                    formStatus.hidden = true;
+                    return;
+                }
+                formStatus.textContent = message;
+                formStatus.hidden = false;
+                formStatus.dataset.state = state;
+            }
 
-                                            function formatProgressLabel(progress) {
-                                                if (!progress) { return ''; }
-                                                const total = Number(progress.batch_total) || 0;
-                                                let prefix = '';
-                                                if (total > 0) {
-                                                    const rawIndex = Number(progress.batch_index);
-                                                    const index = Number.isFinite(rawIndex) && rawIndex > 0 ? rawIndex : 1;
-                                                    prefix = `[${index}/${total}]`;
-                                                }
-                                                const base = progress.label ? `${progress.label}${progress.show_transfer ? '…' : ''}` : '';
-                                                return [prefix, base].filter(Boolean).join(' ').trim();
-                                            }
+            function shortId(id) {
+                return id ? `${id.slice(0, 8)}…` : '';
+            }
 
-                                            function formatProgress(progress) {
-                                                if (!progress) { return '—'; }
-                                                const headline = formatProgressLabel(progress);
-                                                if (!headline) {
-                                                    return '—';
-                                                }
-                                                const parts = [headline];
-                                                if (typeof progress.percent === 'number') {
-                                                    parts.push(`${progress.percent}%`);
-                                                }
-                                                return parts.join(' ');
-                                            }
+            function formatQueue(job) {
+                const value = Number(job.queue_position);
+                return Number.isFinite(value) && value > 0 ? `#${value}` : '—';
+            }
 
-                                            function formatTarget(job) {
-                                                if (job.command === 'video') {
-                                                    const totalRaw = typeof job.video_count === 'number' ? job.video_count : (Array.isArray(job.video_ids) ? job.video_ids.length : 0);
-                                                    const total = Number.isFinite(totalRaw) ? totalRaw : 0;
-                                                    const plural = total === 1 ? '' : 's';
-                                                    return `${total} video${plural}`;
-                                                }
-                                                return job.handle || 'n/a';
-                                            }
+            function formatTarget(job) {
+                if (job.command === 'video') {
+                    const totalRaw = typeof job.video_count === 'number' ? job.video_count : (Array.isArray(job.video_ids) ? job.video_ids.length : 0);
+                    const total = Number.isFinite(totalRaw) ? totalRaw : 0;
+                    const suffix = total === 1 ? '' : 's';
+                    return `${total} video${suffix}`;
+                }
+                return job.handle || 'n/a';
+            }
 
-                                            function formatQueuePosition(job) {
-                                                const position = Number(job.queue_position);
-                                                if (Number.isFinite(position) && position > 0) {
-                                                    return `#${position}`;
-                                                }
-                                                return '—';
-                                            }
+            function formatProgress(job) {
+                const progress = job.progress;
+                if (!progress) { return '—'; }
+                let prefix = '';
+                const total = Number(progress.batch_total) || 0;
+                if (total > 0) {
+                    const rawIndex = Number(progress.batch_index) || 1;
+                    prefix = `[${rawIndex}/${total}]`;
+                }
+                let label = progress.label || '';
+                if (progress.show_transfer) {
+                    label = `${label}…`;
+                }
+                const head = [prefix, label].filter(Boolean).join(' ').trim();
+                if (!head && typeof progress.percent !== 'number') {
+                    return '—';
+                }
+                if (typeof progress.percent === 'number') {
+                    return `${head || ''} ${progress.percent}%`.trim();
+                }
+                return head || '—';
+            }
 
-                                            function setStatusClass(target, status) {
-                                                if (!target) { return; }
-                                                target.textContent = status.charAt(0).toUpperCase() + status.slice(1);
-                                                STATUS_CLASSES.forEach((cls) => target.classList.remove(cls));
-                                                target.classList.add(status);
-                                            }
+            function setStatusClass(target, status) {
+                if (!target) { return; }
+                STATUS_CLASSES.forEach((cls) => target.classList.remove(cls));
+                target.classList.add(status);
+                target.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+            }
 
-                                            function refreshControls(jobId) {
-                                                const row = document.getElementById(`job-${jobId}`);
-                                                const job = jobState.get(jobId);
-                                                if (!row || !job) {
-                                                    return;
-                                                }
-                                                const controls = row.querySelector('[data-controls]');
-                                                if (controls) {
-                                                    renderControls(controls, job);
-                                                }
-                                            }
+            function renderControls(container, job) {
+                if (!container) { return; }
+                const defs = CONTROL_MAP[job.status] || [];
+                container.innerHTML = '';
+                if (!defs.length) {
+                    container.innerHTML = '<span class="muted">—</span>';
+                    return;
+                }
+                defs.forEach((def) => {
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'control-btn';
+                    if (def.tone) {
+                        button.classList.add(def.tone);
+                    }
+                    button.dataset.jobId = job.id;
+                    button.dataset.action = def.action;
+                    button.textContent = def.label;
+                    if (pendingCommands.has(controlKey(job.id, def.action))) {
+                        button.disabled = true;
+                        button.textContent = `${def.label}…`;
+                    }
+                    container.appendChild(button);
+                });
+            }
 
-                                            function markPending(jobId, action) {
-                                                if (!jobId || !action) { return; }
-                                                pendingCommands.add(controlKey(jobId, action));
-                                                refreshControls(jobId);
-                                            }
+            function ensureRow(job) {
+                if (!jobRows) { return null; }
+                let row = document.getElementById(`job-${job.id}`);
+                if (row) {
+                    return row;
+                }
+                row = document.createElement('div');
+                row.className = 'job-row';
+                row.id = `job-${job.id}`;
+                row.dataset.jobId = job.id;
+                row.innerHTML = `
+                    <span class="mono" data-role="short-id"></span>
+                    <span class="status" data-status></span>
+                    <span class="queue-pill" data-queue>—</span>
+                    <span data-role="mode"></span>
+                    <span data-role="target"></span>
+                    <span class="progress-text" data-progress>—</span>
+                    <span data-role="error">—</span>
+                    <span class="control-cell"><div class="control-group" data-controls></div></span>
+                    <span><button type="button" class="log-btn" data-log-button data-job-id="${job.id}">View log</button></span>
+                    <span data-role="api"><a href="${window.location.origin}/jobs/${job.id}.json" target="_blank" rel="noopener">JSON</a></span>
+                `;
+                jobRows.prepend(row);
+                if (emptyNote) {
+                    emptyNote.hidden = true;
+                }
+                return row;
+            }
 
-                                            function clearPending(jobId, action) {
-                                                if (!jobId) { return; }
-                                                if (!action) {
-                                                    clearPendingForJob(jobId);
-                                                    return;
-                                                }
-                                                const key = controlKey(jobId, action);
-                                                if (pendingCommands.delete(key)) {
-                                                    refreshControls(jobId);
-                                                }
-                                            }
+            function updateRow(job) {
+                const row = ensureRow(job);
+                if (!row) { return; }
+                row.dataset.status = job.status;
+                const short = row.querySelector('[data-role="short-id"]');
+                if (short) {
+                    short.textContent = shortId(job.id);
+                }
+                const statusBadge = row.querySelector('[data-status]');
+                setStatusClass(statusBadge, job.status);
+                const queueCell = row.querySelector('[data-queue]');
+                if (queueCell) {
+                    queueCell.textContent = formatQueue(job);
+                }
+                const modeCell = row.querySelector('[data-role="mode"]');
+                if (modeCell) {
+                    modeCell.textContent = job.command || '—';
+                }
+                const targetCell = row.querySelector('[data-role="target"]');
+                if (targetCell) {
+                    targetCell.textContent = formatTarget(job);
+                }
+                const progressCell = row.querySelector('[data-progress]');
+                if (progressCell) {
+                    progressCell.textContent = formatProgress(job);
+                }
+                const errorCell = row.querySelector('[data-role="error"]');
+                if (errorCell) {
+                    errorCell.textContent = job.error || '—';
+                }
+                const apiLink = row.querySelector('[data-role="api"] a');
+                if (apiLink) {
+                    apiLink.href = `${window.location.origin}/jobs/${job.id}.json`;
+                }
+                const logButton = row.querySelector('[data-log-button]');
+                if (logButton) {
+                    logButton.dataset.jobId = job.id;
+                    logButton.textContent = activeJob === job.id ? 'Viewing...' : 'View log';
+                }
+                const controls = row.querySelector('[data-controls]');
+                renderControls(controls, job);
+            }
 
-                                            function clearPendingForJob(jobId) {
-                                                let mutated = False??
-                            break;
-                        case 'job_error':
-                            if (payload.job_id && activeJob === payload.job_id && logMeta) {
-                                const detail = payload.error || 'Command rejected.';
-                                logMeta.textContent = `Job ${payload.job_id.slice(0, 8)}… · ${detail}`;
+            function removeJob(jobId) {
+                jobState.delete(jobId);
+                const row = document.getElementById(`job-${jobId}`);
+                if (row && row.parentElement) {
+                    row.parentElement.removeChild(row);
+                }
+                if (jobRows && jobRows.children.length === 0 && emptyNote) {
+                    emptyNote.hidden = false;
+                }
+                if (activeJob === jobId && logMeta) {
+                    activeJob = null;
+                    highlightActiveRow(null);
+                    logMeta.textContent = `Job ${shortId(jobId)} deleted.`;
+                    logOutput.textContent = '';
+                }
+            }
+
+            function highlightActiveRow(jobId) {
+                document.querySelectorAll('.job-row').forEach((row) => {
+                    if (!row.dataset || !row.dataset.jobId) { return; }
+                    const isActive = Boolean(jobId && row.dataset.jobId === jobId);
+                    row.classList.toggle('active-log', isActive);
+                    const button = row.querySelector('[data-log-button]');
+                    if (button) {
+                        button.disabled = isActive;
+                        button.textContent = isActive ? 'Viewing...' : 'View log';
+                    }
+                });
+            }
+
+            function renderLogPayload(payload) {
+                if (!logOutput || !logMeta) { return; }
+                if (payload.error) {
+                    activeJob = null;
+                    highlightActiveRow(null);
+                    logMeta.textContent = payload.error;
+                    logOutput.textContent = '';
+                    return;
+                }
+                activeJob = payload.job_id;
+                highlightActiveRow(activeJob);
+                const lines = payload.tail || [];
+                logOutput.textContent = lines.length ? lines.join('\n') : 'No log output yet.';
+                const status = payload.status ? ` · ${payload.status}` : '';
+                logMeta.textContent = `Job ${shortId(payload.job_id)}${status}`;
+            }
+
+            function markPending(jobId, action) {
+                if (!jobId || !action) { return; }
+                pendingCommands.add(controlKey(jobId, action));
+                const job = jobState.get(jobId);
+                if (job) {
+                    updateRow(job);
+                }
+            }
+
+            function clearPending(jobId, action) {
+                if (!jobId) { return; }
+                if (action) {
+                    pendingCommands.delete(controlKey(jobId, action));
+                } else {
+                    [...pendingCommands].forEach((key) => {
+                        if (key.startsWith(`${jobId}:`)) {
+                            pendingCommands.delete(key);
+                        }
+                    });
+                }
+                const job = jobState.get(jobId);
+                if (job) {
+                    updateRow(job);
+                }
+            }
+
+            function requestLog(jobId) {
+                if (!socket || socket.readyState !== WebSocket.OPEN) { return; }
+                socket.send(JSON.stringify({ type: 'request_log', job_id: jobId, lines: 200 }));
+                if (logMeta) {
+                    logMeta.textContent = `Job ${shortId(jobId)} · fetching log…`;
+                }
+            }
+
+            if (jobRows) {
+                jobRows.addEventListener('click', (event) => {
+                    const control = event.target.closest('.control-btn');
+                    if (control && jobRows.contains(control)) {
+                        const jobId = control.dataset.jobId;
+                        const action = control.dataset.action;
+                        if (!jobId || !action) { return; }
+                        if (socket && socket.readyState === WebSocket.OPEN) {
+                            const currentLabel = control.textContent;
+                            control.disabled = true;
+                            control.textContent = `${currentLabel}…`;
+                            markPending(jobId, action);
+                            socket.send(JSON.stringify({ type: 'job_control', job_id: jobId, action }));
+                        } else {
+                            setFormStatus('Realtime offline; reload to issue controls.', 'error');
+                        }
+                        return;
+                    }
+                    const logButton = event.target.closest('[data-log-button]');
+                    if (logButton && jobRows.contains(logButton)) {
+                        const jobId = logButton.dataset.jobId;
+                        if (jobId) {
+                            if (socket && socket.readyState === WebSocket.OPEN) {
+                                logButton.disabled = true;
+                                logButton.textContent = 'Loading…';
+                                requestLog(jobId);
                             } else {
-                                setFormStatus(payload.error || 'Unable to start job.', 'error');
+                                setFormStatus('Realtime offline; reload to view logs.', 'error');
                             }
-                            break;
-                        case 'job_log':
-                            renderLogPayload(payload);
-                            break;
-                        case 'job_deleted':
-                            removeJob(payload.job_id);
-                            break;
-                        default:
-                            break;
+                        }
+                    }
+                });
+            }
+
+            if (jobForm) {
+                jobForm.addEventListener('submit', (event) => {
+                    if (!socket || socket.readyState !== WebSocket.OPEN) {
+                        setFormStatus('Realtime offline – submitting via HTTP.', 'error');
+                        return;
+                    }
+                    event.preventDefault();
+                    const formData = new FormData(jobForm);
+                    const payload = Object.fromEntries(formData.entries());
+                    ['subs', 'no_cache', 'no_clear'].forEach((key) => {
+                        payload[key] = formData.has(key);
+                    });
+                    setFormStatus('Submitting job…');
+                    socket.send(JSON.stringify({ type: 'create_job', payload }));
+                });
+            }
+
+            function hydrateFromServer(list) {
+                if (!Array.isArray(list)) { return; }
+                jobState.clear();
+                if (jobRows) {
+                    jobRows.innerHTML = '';
+                }
+                list.forEach((job) => {
+                    if (!job || !job.id) { return; }
+                    jobState.set(job.id, job);
+                    updateRow(job);
+                });
+                if (emptyNote) {
+                    emptyNote.hidden = jobState.size > 0;
+                }
+            }
+
+            function pump(job) {
+                if (!job || !job.id) { return; }
+                jobState.set(job.id, job);
+                updateRow(job);
+            }
+
+            (function initSocket() {
+                const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';
+                const url = `${protocol}://${window.location.host}/ws`;
+                try {
+                    socket = new WebSocket(url);
+                } catch (error) {
+                    console.warn('Unable to connect to websocket', error);
+                    setFormStatus('Realtime connection failed. Reload after jobs finish.', 'error');
+                    return;
+                }
+
+                socket.addEventListener('open', () => {
+                    setFormStatus('Realtime connected.', 'success');
+                    window.setTimeout(() => setFormStatus(''), 2500);
+                });
+
+                socket.addEventListener('message', (event) => {
+                    try {
+                        const payload = JSON.parse(event.data);
+                        switch (payload.type) {
+                            case 'jobs_snapshot':
+                                hydrateFromServer(payload.jobs);
+                                break;
+                            case 'job_update':
+                                pump(payload.job);
+                                break;
+                            case 'job_created':
+                                setFormStatus(`Queued job ${shortId(payload.job_id)}.`, 'success');
+                                if (jobForm) {
+                                    jobForm.reset();
+                                }
+                                syncFields();
+                                break;
+                            case 'job_log':
+                                renderLogPayload(payload);
+                                break;
+                            case 'job_control_ack':
+                                clearPending(payload.job_id, payload.action);
+                                break;
+                            case 'job_deleted':
+                                removeJob(payload.job_id);
+                                break;
+                            case 'job_error':
+                                if (payload.job_id) {
+                                    clearPending(payload.job_id, payload.action);
+                                    setFormStatus(payload.error || 'Command rejected.', 'error');
+                                } else {
+                                    setFormStatus(payload.error || 'Unable to create job.', 'error');
+                                }
+                                break;
+                            default:
+                                break;
+                        }
+                    } catch (error) {
+                        console.error('Unable to parse message', error);
                     }
                 });
 
                 socket.addEventListener('close', () => {
                     socket = null;
-                    setFormStatus('Realtime connection closed. Falling back to page reload on submit.', 'error');
-                    if (logMeta && activeJob) {
-                        logMeta.textContent = `Job ${activeJob.slice(0, 8)}… · connection closed`;
-                    }
+                    setFormStatus('Realtime connection closed. Falling back to form submit.', 'error');
                 });
-            }
+
+                socket.addEventListener('error', () => {
+                    setFormStatus('Realtime connection error.', 'error');
+                });
+            })();
         })();
     </script>
 </body>

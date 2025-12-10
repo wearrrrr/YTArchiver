@@ -1,10 +1,10 @@
+from __future__ import annotations
+
 import json
 import re
 import threading
-import uuid
 from collections import deque
 from collections.abc import Mapping
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,14 +12,14 @@ from flask import Flask, jsonify, redirect, render_template, request, url_for
 from flask_sock import Sock
 from simple_websocket import ConnectionClosed, Server
 
-from ytarchiver.progress import register_progress_sink, unregister_progress_sink
-from ytarchiver.service import ArchiveConfig, run_archive
+from ytarchiver.service import ArchiveConfig
+
+from .job_manager import JobManager
 
 app = Flask(__name__)
 sock = Sock(app)
 
-_jobs: dict[str, dict] = {}
-_jobs_lock = threading.Lock()
+job_manager = JobManager(Path("logs/webui-jobs.json"))
 _ws_clients: set[Server] = set()
 _ws_clients_lock = threading.Lock()
 _log_subscribers: dict[str, set[Server]] = {}
@@ -27,42 +27,21 @@ _log_subscribers_lock = threading.Lock()
 _ws_log_targets: dict[Server, str] = {}
 
 
-def _read_log_tail(job: dict, max_lines: int) -> list[str]:
-    max_lines = max(1, min(max_lines, 500))
-    log_path = Path(job["log_file"])
-    if log_path.exists():
-        try:
-            log_buffer: deque[str] = deque(maxlen=max_lines)
-            with log_path.open("r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
-                    log_buffer.append(line.rstrip("\n"))
-            return list(log_buffer)
-        except Exception:  # noqa: BLE001
-            return ["Unable to read log file."]
-    return ["Log file not created yet."]
-
-
-def _serialize_job(job: dict, include_log: bool = False, max_lines: int = 40) -> dict:
-    config: ArchiveConfig = job["config"]
-    video_ids = list(config.video_ids or [])
-    payload = {
-        "id": job["id"],
-        "status": job["status"],
-        "error": job["error"],
-        "log_file": job["log_file"],
-        "progress": job.get("progress"),
-        "command": config.command,
-        "handle": config.handle,
-        "video_ids": video_ids,
-        "video_count": len(video_ids),
-    }
-
-    if include_log:
-        tail = _read_log_tail(job, max_lines=max_lines)
-        payload["tail"] = tail
-        payload["tail_text"] = "\n".join(tail)
-
-    return payload
+def _read_log_tail(log_file: str | None, max_lines: int = 200) -> list[str]:
+    max_lines = max(1, min(max_lines, 1000))
+    if not log_file:
+        return ["Log file not specified."]
+    path = Path(log_file)
+    if not path.exists():
+        return ["Log file not created yet."]
+    buffer: deque[str] = deque(maxlen=max_lines)
+    try:
+        with path.open("r", encoding="utf-8", errors="ignore") as handle:
+            for line in handle:
+                buffer.append(line.rstrip("\n"))
+    except OSError:
+        return ["Unable to read log file."]
+    return list(buffer)
 
 
 def _send_ws_message(ws: Server, payload: dict):
@@ -77,15 +56,14 @@ def _broadcast(payload: dict):
     message = json.dumps(payload)
     stale: list[Server] = []
     with _ws_clients_lock:
-        clients = list(_ws_clients)
-    for ws in clients:
+        targets = list(_ws_clients)
+    for ws in targets:
         try:
             ws.send(message)
         except ConnectionClosed:
             stale.append(ws)
-    if stale:
-        for ws in stale:
-            _detach_ws(ws)
+    for ws in stale:
+        _detach_ws(ws)
 
 
 def _unsubscribe_log(ws: Server):
@@ -99,6 +77,14 @@ def _unsubscribe_log(ws: Server):
         watchers.discard(ws)
         if not watchers:
             _log_subscribers.pop(job_id, None)
+
+
+def _clear_log_subscribers(job_id: str):
+    with _log_subscribers_lock:
+        watchers = _log_subscribers.pop(job_id, set())
+        for ws in list(watchers):
+            if _ws_log_targets.get(ws) == job_id:
+                _ws_log_targets.pop(ws, None)
 
 
 def _subscribe_log(ws: Server, job_id: str):
@@ -121,42 +107,24 @@ def _detach_ws(ws: Server):
     _unsubscribe_log(ws)
 
 
-def _broadcast_job(job: dict, include_log: bool = False):
-    _broadcast({"type": "job_update", "job": _serialize_job(job, include_log=include_log)})
-
-
 def _send_jobs_snapshot(ws: Server):
-    with _jobs_lock:
-        jobs = sorted(_jobs.values(), key=lambda entry: entry["created"], reverse=True)
-        snapshot = [_serialize_job(job) for job in jobs]
+    snapshot = job_manager.list_jobs()
     _send_ws_message(ws, {"type": "jobs_snapshot", "jobs": snapshot})
 
 
-def _send_job_log(ws: Server, job_id: str, job: dict, max_lines: int = 200):
-    tail = _read_log_tail(job, max_lines=max_lines)
-    _send_ws_message(
-        ws,
-        {
-            "type": "job_log",
-            "job_id": job_id,
-            "status": job["status"],
-            "progress": job.get("progress"),
-            "tail": tail,
-            "tail_text": "\n".join(tail),
-        },
-    )
-
-
-def _broadcast_job_log(job_id: str, job: dict, max_lines: int = 200):
+def _broadcast_job_log(job: dict, max_lines: int = 200):
+    job_id = job.get("id")
+    if not job_id:
+        return
     with _log_subscribers_lock:
         targets = list(_log_subscribers.get(job_id, ()))
     if not targets:
         return
-    tail = _read_log_tail(job, max_lines=max_lines)
+    tail = _read_log_tail(job.get("log_file"), max_lines)
     payload = {
         "type": "job_log",
         "job_id": job_id,
-        "status": job["status"],
+        "status": job.get("status"),
         "progress": job.get("progress"),
         "tail": tail,
         "tail_text": "\n".join(tail),
@@ -172,46 +140,22 @@ def _broadcast_job_log(job_id: str, job: dict, max_lines: int = 200):
         _detach_ws(ws)
 
 
-def _handle_ws_message(ws: Server, data):
-    if not isinstance(data, dict):
-        return
-
-    message_type = data.get("type")
-    if message_type == "request_log":
-        job_id = data.get("job_id")
-        if not job_id:
-            _send_ws_message(ws, {"type": "job_log", "error": "Job ID required."})
+def _job_event_listener(event: dict):
+    kind = event.get("event")
+    if kind == "job_update":
+        job_payload = event.get("job")
+        if not job_payload:
             return
+        _broadcast({"type": "job_update", "job": job_payload})
+        _broadcast_job_log(job_payload)
+    elif kind == "job_deleted":
+        job_id = event.get("job_id")
+        if job_id:
+            _clear_log_subscribers(job_id)
+            _broadcast({"type": "job_deleted", "job_id": job_id})
 
-        max_lines = data.get("lines")
-        try:
-            lines = max(1, int(max_lines or 200))
-        except (TypeError, ValueError):
-            lines = 200
 
-        with _jobs_lock:
-            job = _jobs.get(job_id)
-
-        if not job:
-            _send_ws_message(ws, {"type": "job_log", "job_id": job_id, "error": "Job not found."})
-            return
-
-        _subscribe_log(ws, job_id)
-        _send_job_log(ws, job_id, job, max_lines=lines)
-    elif message_type == "create_job":
-        payload = data.get("payload")
-        if not isinstance(payload, dict):
-            payload = {}
-        config, log_override, validation_error = _prepare_job_submission(payload)
-        if validation_error:
-            _send_ws_message(ws, {"type": "job_error", "error": validation_error})
-            return
-        try:
-            job_id = _start_job(config, log_override)
-        except Exception as exc:  # noqa: BLE001
-            _send_ws_message(ws, {"type": "job_error", "error": str(exc)})
-            return
-        _send_ws_message(ws, {"type": "job_created", "job_id": job_id})
+job_manager.register_listener(_job_event_listener)
 
 
 def _parse_video_ids(raw: str) -> list[str]:
@@ -284,103 +228,62 @@ def _prepare_job_submission(data: Mapping[str, Any] | dict[str, Any] | None):
     return config, log_override, None
 
 
-def _start_job(config: ArchiveConfig, log_file: Path | None) -> str:
-    job_id = str(uuid.uuid4())
-    log_path = log_file.expanduser() if log_file else Path(f"logs/webui-{job_id}.log")
+def _handle_ws_message(ws: Server, data: dict):
+    if not isinstance(data, dict):
+        return
 
-    job_record = {
-        "id": job_id,
-        "config": config,
-        "status": "queued",
-        "error": None,
-        "log_file": str(log_path),
-        "created": datetime.utcnow(),
-        "progress": {
-            "label": "Queued",
-            "detail": "",
-            "percent": None,
-            "downloaded": 0,
-            "total": None,
-            "eta": None,
-            "speed": None,
-            "show_transfer": False,
-            "batch_index": None,
-            "batch_total": None,
-            "updated": datetime.utcnow().isoformat(),
-        },
-    }
-
-    def runner():
-        job_record["status"] = "running"
-
-        def _sink(payload: dict):
-            snapshot = {
-                "label": payload.get("label", ""),
-                "detail": payload.get("detail", ""),
-                "percent": payload.get("percent"),
-                "downloaded": payload.get("downloaded"),
-                "total": payload.get("total"),
-                "eta": payload.get("eta"),
-                "speed": payload.get("speed"),
-                "show_transfer": payload.get("show_transfer", False),
-                "batch_index": payload.get("batch_index"),
-                "batch_total": payload.get("batch_total"),
-                "updated": datetime.utcnow().isoformat(),
-            }
-            job_record["progress"] = snapshot
-            _broadcast_job(job_record)
-            _broadcast_job_log(job_id, job_record)
-
-        register_progress_sink(_sink)
+    message_type = data.get("type")
+    if message_type == "request_log":
+        job_id = data.get("job_id")
+        if not job_id:
+            _send_ws_message(ws, {"type": "job_log", "error": "Job ID required."})
+            return
+        max_lines = data.get("lines")
         try:
-            config.log_file = str(log_path)
-            run_archive(config)
-            job_record["status"] = "completed"
-            job_record["progress"] = {
-                "label": "Completed",
-                "detail": "",
-                "percent": None,
-                "downloaded": job_record.get("progress", {}).get("downloaded"),
-                "total": job_record.get("progress", {}).get("total"),
-                "eta": None,
-                "speed": None,
-                "show_transfer": False,
-                "batch_index": job_record.get("progress", {}).get("batch_index"),
-                "batch_total": job_record.get("progress", {}).get("batch_total"),
-                "updated": datetime.utcnow().isoformat(),
-            }
-            _broadcast_job(job_record)
-            _broadcast_job_log(job_id, job_record)
-        except Exception as exc:
-            job_record["status"] = "failed"
-            job_record["error"] = str(exc)
-            job_record["progress"] = {
-                "label": "Error",
-                "detail": str(exc),
-                "percent": job_record.get("progress", {}).get("percent"),
-                "downloaded": job_record.get("progress", {}).get("downloaded"),
-                "total": job_record.get("progress", {}).get("total"),
-                "eta": None,
-                "speed": None,
-                "show_transfer": False,
-                "batch_index": job_record.get("progress", {}).get("batch_index"),
-                "batch_total": job_record.get("progress", {}).get("batch_total"),
-                "updated": datetime.utcnow().isoformat(),
-            }
-            _broadcast_job(job_record)
-            _broadcast_job_log(job_id, job_record)
-        finally:
-            unregister_progress_sink(_sink)
-
-    thread = threading.Thread(target=runner, daemon=True)
-
-    with _jobs_lock:
-        _jobs[job_id] = job_record
-        thread.start()
-
-    _broadcast_job(job_record)
-
-    return job_id
+            lines = max(1, int(max_lines or 200))
+        except (TypeError, ValueError):
+            lines = 200
+        try:
+            log_payload = job_manager.log_payload(job_id, max_lines=lines)
+        except ValueError as exc:
+            _send_ws_message(ws, {"type": "job_log", "job_id": job_id, "error": str(exc)})
+            return
+        _subscribe_log(ws, job_id)
+        log_payload["type"] = "job_log"
+        _send_ws_message(ws, log_payload)
+    elif message_type == "create_job":
+        payload = data.get("payload")
+        if not isinstance(payload, dict):
+            payload = {}
+        config, log_override, validation_error = _prepare_job_submission(payload)
+        if validation_error:
+            _send_ws_message(ws, {"type": "job_error", "error": validation_error})
+            return
+        try:
+            job_id = job_manager.create_job(config, log_override)
+        except Exception as exc:  # noqa: BLE001
+            _send_ws_message(ws, {"type": "job_error", "error": str(exc)})
+            return
+        _send_ws_message(ws, {"type": "job_created", "job_id": job_id})
+    elif message_type == "job_control":
+        job_id = data.get("job_id")
+        action = (data.get("action") or "").strip().lower()
+        if not job_id or action not in {"pause", "stop", "resume", "delete"}:
+            _send_ws_message(ws, {"type": "job_error", "job_id": job_id, "action": action, "error": "Invalid job control request."})
+            return
+        try:
+            if action == "pause":
+                job_manager.pause_job(job_id)
+            elif action == "stop":
+                job_manager.stop_job(job_id)
+            elif action == "resume":
+                job_manager.resume_job(job_id)
+            elif action == "delete":
+                job_manager.delete_job(job_id)
+        except ValueError as exc:
+            _send_ws_message(ws, {"type": "job_error", "job_id": job_id, "action": action, "error": str(exc)})
+            return
+        _send_ws_message(ws, {"type": "job_control_ack", "job_id": job_id, "action": action})
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -391,28 +294,27 @@ def index():
         if validation_error:
             error = validation_error
         else:
-            job_id = _start_job(config, log_override)
-            return redirect(url_for("index", job_id=job_id))
+            try:
+                job_manager.create_job(config, log_override)
+                return redirect(url_for("index"))
+            except Exception as exc:  # noqa: BLE001
+                error = str(exc)
 
-    with _jobs_lock:
-        jobs = sorted(_jobs.values(), key=lambda entry: entry["created"], reverse=True)
-
+    jobs = job_manager.list_jobs()
     return render_template("index.html", jobs=jobs, error=error)
 
 
 @app.route("/jobs/<job_id>.json")
 def job_status(job_id: str):
-    with _jobs_lock:
-        job = _jobs.get(job_id)
-    if not job:
-        return jsonify({"error": "Job not found"}), 404
-
     max_lines = request.args.get("lines", type=int) or 40
-    return jsonify(_serialize_job(job, include_log=True, max_lines=max_lines))
+    payload = job_manager.serialize_job(job_id, include_log=True, max_lines=max_lines)
+    if not payload:
+        return jsonify({"error": "Job not found"}), 404
+    return jsonify(payload)
 
 
 @sock.route("/ws")
-def websocket_endpoint(ws: Server):  # pragma: no cover - network path
+def websocket_endpoint(ws: Server):  # pragma: no cover
     with _ws_clients_lock:
         _ws_clients.add(ws)
 
