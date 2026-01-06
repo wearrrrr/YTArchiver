@@ -185,6 +185,26 @@
             </div>
         </section>
 
+        <section class="panel">
+            <h2>Watchlist</h2>
+            <p>The daemon checks these channels periodically for new uploads and queues download jobs automatically.</p>
+            <div id="watchlist-table">
+                <div class="watchlist-row header">
+                    <span>ID</span>
+                    <span>Handle</span>
+                    <span>Mode</span>
+                    <span>Interval</span>
+                    <span>Last Check</span>
+                    <span>Last Job</span>
+                    <span>Controls</span>
+                </div>
+                <div id="watchlist-rows" class="watchlist-rows">
+                    
+                </div>
+            </div>
+            <button type="button" id="add-watch-btn">Add Channel</button>
+        </section>
+
         <section class="panel log-panel">
             <h2>Log Viewer</h2>
             <p id="log-meta">Select a job to stream the latest 200 lines.</p>
@@ -203,6 +223,9 @@
             const formStatus = document.getElementById('form-status');
             const logOutput = document.getElementById('log-output');
             const logMeta = document.getElementById('log-meta');
+            const watchlistRows = document.getElementById('watchlist-rows');
+            const addWatchBtn = document.getElementById('add-watch-btn');
+            const watchlistState = new Map();
             const jobState = new Map();
             const pendingCommands = new Set();
             const STATUS_CLASSES = ['queued', 'running', 'completed', 'failed', 'paused', 'stopped'];
@@ -565,6 +588,126 @@
                 jobState.set(job.id, job);
                 updateRow(job);
             }
+
+            function loadWatchlist() {
+                fetch('/api/watchlist')
+                    .then(response => response.json())
+                    .then(data => {
+                        if (data.error) {
+                            console.error('Failed to load watchlist:', data.error);
+                            return;
+                        }
+                        watchlistState.clear();
+                        if (watchlistRows) {
+                            watchlistRows.innerHTML = '';
+                        }
+                        (data.entries || []).forEach(entry => {
+                            watchlistState.set(entry.id, entry);
+                            renderWatchlistRow(entry);
+                        });
+                    })
+                    .catch(error => console.error('Error loading watchlist:', error));
+            }
+
+            function renderWatchlistRow(entry) {
+                if (!watchlistRows) return;
+                const row = document.createElement('div');
+                row.className = 'watchlist-row';
+                row.id = 'watch-' + entry.id;
+                
+                const lastCheck = entry.last_check_ts ? new Date(entry.last_check_ts * 1000).toLocaleString() : 'Never';
+                const lastJob = entry.last_enqueued_ts ? new Date(entry.last_enqueued_ts * 1000).toLocaleString() : 'Never';
+                
+                row.innerHTML = '<span class="mono">' + entry.id + '</span>' +
+                    '<span>' + entry.handle + '</span>' +
+                    '<span>' + entry.mode + '</span>' +
+                    '<span>' + entry.interval_minutes + 'm</span>' +
+                    '<span>' + lastCheck + '</span>' +
+                    '<span>' + lastJob + '</span>' +
+                    '<span class="control-group">' +
+                        '<button type="button" class="control-btn muted" data-watch-id="' + entry.id + '" data-action="edit">Edit</button>' +
+                        '<button type="button" class="control-btn danger" data-watch-id="' + entry.id + '" data-action="delete">Delete</button>' +
+                    '</span>';
+                watchlistRows.appendChild(row);
+            }
+
+            function addWatchEntry(entry) {
+                fetch('/api/watchlist', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(entry)
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Error adding watch entry: ' + data.error);
+                        return;
+                    }
+                    loadWatchlist();
+                })
+                .catch(error => {
+                    console.error('Error adding watch entry:', error);
+                    alert('Failed to add watch entry');
+                });
+            }
+
+            function deleteWatchEntry(entryId) {
+                if (!confirm('Are you sure you want to delete this watch entry?')) return;
+                
+                fetch('/api/watchlist/' + entryId, { method: 'DELETE' })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.error) {
+                        alert('Error deleting watch entry: ' + data.error);
+                        return;
+                    }
+                    loadWatchlist();
+                })
+                .catch(error => {
+                    console.error('Error deleting watch entry:', error);
+                    alert('Failed to delete watch entry');
+                });
+            }
+
+            if (addWatchBtn) {
+                addWatchBtn.addEventListener('click', () => {
+                    const handle = prompt('Enter YouTube channel handle (with or without @):');
+                    if (!handle) return;
+                    
+                    const entry = {
+                        handle: handle.trim(),
+                        mode: 'channel',
+                        interval_minutes: 60,
+                        subs: false,
+                        no_cache: false,
+                        out_dir: 'yt',
+                        log_level: 'INFO',
+                        clear_screen: true,
+                        tags: []
+                    };
+                    addWatchEntry(entry);
+                });
+            }
+
+            if (watchlistRows) {
+                watchlistRows.addEventListener('click', (event) => {
+                    const button = event.target.closest('.control-btn');
+                    if (!button) return;
+                    
+                    const entryId = parseInt(button.dataset.watchId);
+                    const action = button.dataset.action;
+                    
+                    if (action === 'delete') {
+                        deleteWatchEntry(entryId);
+                    } else if (action === 'edit') {
+                        // For now, just show an alert. Could implement full edit later.
+                        alert('Edit functionality not implemented yet. Delete and re-add instead.');
+                    }
+                });
+            }
+
+            // Load watchlist on page load
+            loadWatchlist();
 
             (function initSocket() {
                 const protocol = window.location.protocol === 'https:' ? 'wss' : 'ws';

@@ -60,7 +60,7 @@ a {
     resize: vertical;
 }
 
-.job-form button {
+.job-form button, #add-watch-btn {
     width: 100%;
     padding: 0.9rem;
     background: linear-gradient(120deg, #ff512f, #dd2476);
@@ -346,6 +346,51 @@ a {
     margin: 0 0 1rem;
     color: #a0a8c3;
     font-style: italic;
+}
+
+#watchlist-table {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    margin-bottom: 1rem;
+}
+
+.watchlist-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.watchlist-row {
+    display: grid;
+    grid-template-columns: 60px 1fr 100px 120px 140px 140px 120px;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    background: rgba(255, 255, 255, 0.04);
+    border-radius: 12px;
+    align-items: center;
+    text-align: center;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    font-size: 0.9rem;
+}
+
+.watchlist-row.header {
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    opacity: 0.7;
+}
+
+.watchlist-row .control-group {
+    display: flex;
+    flex-direction: row;
+    gap: 0.35rem;
+    justify-content: center;
+}
+
+.watchlist-row .control-btn {
+    padding: 0.3rem 0.6rem;
+    font-size: 0.8rem;
 }
 
 [hidden] {

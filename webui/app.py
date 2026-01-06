@@ -13,6 +13,8 @@ from flask_sock import Sock
 from simple_websocket import ConnectionClosed, Server
 
 from ytarchiver.service import ArchiveConfig
+from ytarchiver.watcher import WatchDaemon
+from ytarchiver.watchlist import WatchlistStore
 
 from .job_manager import JobManager
 
@@ -20,6 +22,8 @@ app = Flask(__name__)
 sock = Sock(app)
 
 job_manager = JobManager(Path("logs/webui-jobs.json"))
+watchlist_store = WatchlistStore(Path("logs/watchlist.db"))
+watch_daemon = WatchDaemon(job_manager, watchlist_store, poll_interval=300, batch_size=5)
 _ws_clients: set[Server] = set()
 _ws_clients_lock = threading.Lock()
 _log_subscribers: dict[str, set[Server]] = {}
@@ -157,6 +161,9 @@ def _job_event_listener(event: dict):
 
 job_manager.register_listener(_job_event_listener)
 
+daemon_thread = threading.Thread(target=watch_daemon.run_forever, daemon=True)
+daemon_thread.start()
+
 
 def _parse_video_ids(raw: str) -> list[str]:
     parts = re.split(r"[\s,]+", raw.strip()) if raw else []
@@ -284,6 +291,75 @@ def _handle_ws_message(ws: Server, data: dict):
             _send_ws_message(ws, {"type": "job_error", "job_id": job_id, "action": action, "error": str(exc)})
             return
         _send_ws_message(ws, {"type": "job_control_ack", "job_id": job_id, "action": action})
+
+
+@app.route("/api/watchlist", methods=["GET"])
+def get_watchlist():
+    try:
+        entries = watchlist_store.list_entries()
+        return jsonify({"entries": [entry.as_dict() for entry in entries]})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/watchlist", methods=["POST"])
+def add_watch_entry():
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON payload"}), 400
+    
+    try:
+        entry_id = watchlist_store.add_entry(
+            handle=data.get("handle", "").strip(),
+            mode=data.get("mode", "channel"),
+            interval_minutes=int(data.get("interval_minutes", 60)),
+            subs=bool(data.get("subs", False)),
+            no_cache=bool(data.get("no_cache", False)),
+            out_dir=data.get("out_dir", "yt").strip() or "yt",
+            log_level=data.get("log_level", "INFO").strip().upper() or "INFO",
+            clear_screen=bool(data.get("clear_screen", True)),
+            tags=data.get("tags", []),
+        )
+        return jsonify({"entry_id": entry_id}), 201
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/watchlist/<int:entry_id>", methods=["PUT"])
+def update_watch_entry(entry_id: int):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Missing JSON payload"}), 400
+    
+    try:
+        watchlist_store.update_entry(
+            entry_id=entry_id,
+            handle=data.get("handle"),
+            mode=data.get("mode"),
+            interval_minutes=data.get("interval_minutes"),
+            subs=data.get("subs"),
+            no_cache=data.get("no_cache"),
+            out_dir=data.get("out_dir"),
+            log_level=data.get("log_level"),
+            clear_screen=data.get("clear_screen"),
+            tags=data.get("tags"),
+        )
+        return jsonify({"success": True})
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
+
+
+@app.route("/api/watchlist/<int:entry_id>", methods=["DELETE"])
+def delete_watch_entry(entry_id: int):
+    try:
+        watchlist_store.delete_entry(entry_id)
+        return jsonify({"success": True})
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 500
 
 
 @app.route("/", methods=["GET", "POST"])

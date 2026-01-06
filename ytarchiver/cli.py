@@ -1,9 +1,12 @@
 import argparse
 import logging
 import sys
+from pathlib import Path
 
 from .constants import ASCII_ART, LOG_LEVEL_CHOICES
 from .service import ArchiveConfig, run_archive
+from .watcher import WatchDaemon
+from .watchlist import WatchlistStore
 
 LOG = logging.getLogger("ytarchiver")
 
@@ -50,12 +53,33 @@ def build_parser() -> argparse.ArgumentParser:
     video_parser = subparsers.add_parser("video", help="Download one or more individual videos")
     video_parser.add_argument("video_ids", nargs="+", help="Video IDs or URLs")
 
+    watch_parser = subparsers.add_parser("watch", help="Run the background daemon to monitor channels")
+    watch_parser.add_argument("--poll-interval", type=int, default=300, help="Seconds between watchlist checks (default: %(default)s)")
+    watch_parser.add_argument("--batch-size", type=int, default=5, help="Max channels to check per cycle (default: %(default)s)")
+    watch_parser.add_argument("--db-path", default="logs/watchlist.db", help="Path to watchlist database (default: %(default)s)")
+
     return parser
 
 
 def main():
     parser = build_parser()
     args = parser.parse_args()
+
+    if args.command == "watch":
+        from ytarchiver.webui.job_manager import JobManager
+        job_manager = JobManager(Path("logs/webui-jobs.json"))
+        watchlist = WatchlistStore(Path(args.db_path))
+        daemon = WatchDaemon(
+            job_manager=job_manager,
+            watchlist=watchlist,
+            poll_interval=args.poll_interval,
+            batch_size=args.batch_size,
+        )
+        try:
+            daemon.run_forever()
+        except KeyboardInterrupt:
+            LOG.info("Watch daemon stopped by user")
+        return
 
     config = ArchiveConfig(
         command=args.command,
