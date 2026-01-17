@@ -128,7 +128,6 @@ class WatchDaemon:
             handle=entry.normalized_handle(),
             video_ids=[],
             out=entry.out_dir,
-            subs=entry.subs,
             no_cache=entry.no_cache,
             log_file=str(self._log_path_for_entry(entry)),
             log_level=entry.log_level,

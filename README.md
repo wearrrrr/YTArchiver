@@ -12,6 +12,8 @@ This is a simple script to archive YouTube videos and channels!
 - yt-dlp logs automatically captured to a file for troubleshooting
 - Colorized progress banner with per-video stats while downloading
 - Background daemon to automatically monitor channels for new uploads
+- **Comprehensive archival**: Subtitles and metadata are always downloaded
+- **SQLite metadata database**: Stores view counts, engagement metrics, and technical details for each video
 
 # Requirements
 - Python 3.1x (Older probably works, but untested!)
@@ -33,15 +35,17 @@ This is a simple script to archive YouTube videos and channels!
    # Entire channel archive
    python3 dl.py channel @veritasium
 
-   # Shorts feed + subtitles
-   python3 dl.py shorts @veritasium --subs
+   # Shorts feed
+   python3 dl.py shorts @veritasium
 
    # Individual videos with a custom output directory
    python3 dl.py video dQw4w9WgXcQ jNQXAC9IVRw --out /data/archive
 
-   Run the background daemon to monitor channels
+   # Run the background daemon to monitor channels
    python3 dl.py watch
    ```
+
+**Note:** Subtitles are now always downloaded automatically for proper archival. The `--subs` flag has been removed.
 
 # Background Daemon
 
@@ -54,6 +58,20 @@ python3 dl.py watch --poll-interval 600 --batch-size 10
 # Logging
 
 yt-dlp output is redirected to `logs/ytarchiver.log` by default. Override this path with `--log-file` if you prefer a different destination.
+
+# Metadata Archival
+
+YTArchiver automatically saves comprehensive metadata for each downloaded video in a SQLite database (`metadata.db`) within each channel's directory. This includes:
+
+- Video title, uploader, upload date, duration
+- Engagement metrics: view count, like count, comment count (captured at download time)
+- Technical details: resolution, codecs, filesize, FPS
+- Categories, tags, description
+- Live status and media type
+- Subtitle availability
+- Full yt-dlp metadata as JSON
+
+This ensures you have a complete historical record of each video, including metrics that may change or become unavailable over time.
 
 ## Web UI (Flask)
 

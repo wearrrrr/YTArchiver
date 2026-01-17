@@ -61,7 +61,6 @@ class ArchiveConfig:
     handle: str | None = None
     video_ids: Sequence[str] = field(default_factory=list)
     out: str = "yt"
-    subs: bool = False
     no_cache: bool = False
     log_file: str = "logs/ytarchiver.log"
     log_level: str = "INFO"
@@ -106,12 +105,18 @@ def _build_channel_url(handle: str, shorts: bool) -> str:
     return f"{base}/shorts" if shorts else base
 
 
-def _build_ydl_options(download_archive: Path | None, download_subs: bool, ytdlp_logger: logging.Logger) -> dict:
+def _build_ydl_options(download_archive: Path | None, ytdlp_logger: logging.Logger) -> dict:
     opts = {
         "ignoreerrors": True,
         "outtmpl": "%(id)s.%(ext)s",
         "remux_video": "mkv",
         "merge_output_format": "mkv",
+        "writesubtitles": True,
+        "subtitleslangs": ["all"],
+        "subtitlesformat": "srv3",
+        "live_chat": True,
+        "writethumbnail": True,
+        "writeinfojson": True,
         "postprocessors": [
             {"key": "FFmpegMetadata"},
             {"key": "EmbedThumbnail"},
@@ -119,20 +124,12 @@ def _build_ydl_options(download_archive: Path | None, download_subs: bool, ytdlp
         "postprocessor_hooks": [on_postprocess, postprocess_subs],
         "progress_hooks": [progress_hook],
         "logger": ytdlp_logger,
+        "remote_components": ["ejs:github"],
+        "cookiesfrombrowser": ("brave", None, None, None)
     }
 
     if download_archive:
         opts["download_archive"] = str(download_archive)
-
-    if download_subs:
-        opts.update(
-            {
-                "writesubtitles": True,
-                "subtitleslangs": ["all"],
-                "subtitlesformat": "srv3",
-                "live_chat": True,
-            }
-        )
 
     return opts
 
@@ -270,7 +267,7 @@ def run_archive(
 
         if tasks is None:
             tasks = _queue_tasks(config)
-        ydl_opts = _build_ydl_options(download_archive, config.subs, ytdlp_logger)
+        ydl_opts = _build_ydl_options(download_archive, ytdlp_logger)
         _run_downloads(
             tasks,
             ydl_opts,

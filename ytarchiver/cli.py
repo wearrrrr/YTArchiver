@@ -23,7 +23,6 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--out", default="yt", help="Base output directory (default: %(default)s)")
-    parser.add_argument("--subs", action="store_true", help="Download and convert subtitles (srv3 + ASS)")
     parser.add_argument("--no-cache", action="store_true", help="Disable the download archive cache")
     parser.add_argument(
         "--log-file",
@@ -86,7 +85,6 @@ def main():
         handle=getattr(args, "handle", None),
         video_ids=getattr(args, "video_ids", []) or [],
         out=args.out,
-        subs=args.subs,
         no_cache=args.no_cache,
         log_file=args.log_file,
         log_level=args.log_level,

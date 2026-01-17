@@ -50,7 +50,11 @@ def fetch_tasks_for_video_ids(video_ids: Iterable[str]) -> List[VideoTask]:
     if not ids:
         return tasks
 
-    opts = {"quiet": True}
+    opts = {
+        "quiet": True,
+        "remote_components": "ejs:github",
+        "cookiesfrombrowser": ("brave", None, None, None)
+    }
     with YoutubeDL(opts) as ydl:
         for video_id in ids:
             video_url = make_watch_url(video_id)

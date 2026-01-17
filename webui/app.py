@@ -224,7 +224,6 @@ def _prepare_job_submission(data: Mapping[str, Any] | dict[str, Any] | None):
         handle=handle,
         video_ids=video_ids,
         out=out_dir,
-        subs=_coerce_bool(data.get("subs")),
         no_cache=_coerce_bool(data.get("no_cache")),
         log_file=log_file_input or "logs/webui-placeholder.log",
         log_level=log_level.upper(),

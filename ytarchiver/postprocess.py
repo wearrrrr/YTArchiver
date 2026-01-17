@@ -7,6 +7,7 @@ from pathlib import Path
 from .context import channel_info, video_state
 from .helpers import sanitize
 from .progress import set_stage
+from .metadata import MetadataStore
 
 LOG = logging.getLogger("ytarchiver")
 
@@ -62,6 +63,42 @@ def on_postprocess(info: dict):
         LOG.info("Saved video -> %s", new_video_path)
     except Exception as exc:  # noqa: BLE001
         LOG.error("Failed to move video %s -> %s (%s)", video_state.tmp_file, new_video_path, exc)
+
+    # Save metadata to database
+    try:
+        channel_dir = video_state.output_root / channel_name
+        metadata_store = MetadataStore(channel_dir)
+
+        # Find and copy thumbnail file (embedded thumbnail remains in video, but we also keep a copy)
+        thumbnail_path = None
+        if video_state.tmp_dir and video_state.vid:
+            for ext in ['.jpg', '.png', '.webp']:
+                thumb = video_state.tmp_dir / f"{video_state.vid}{ext}"
+                if thumb.exists():
+                    new_thumb_path = video_dir / f"thumbnail{ext}"
+                    try:
+                        shutil.copy2(str(thumb), str(new_thumb_path))
+                        thumbnail_path = str(new_thumb_path)
+                        LOG.info("Saved thumbnail -> %s", new_thumb_path)
+                        thumb.unlink()
+                    except Exception as thumb_exc:  # noqa: BLE001
+                        LOG.warning("Failed to copy thumbnail %s -> %s (%s)", thumb, new_thumb_path, thumb_exc)
+                    break
+
+        metadata_store.save_video_metadata(data, str(new_video_path), thumbnail_path)
+        LOG.info("Saved metadata for %s to database", video_state.vid)
+    except Exception as exc:  # noqa: BLE001
+        LOG.error("Failed to save metadata for %s (%s)", video_state.vid, exc)
+
+    # Clean up .info.json file
+    if video_state.tmp_dir and video_state.vid:
+        info_json_file = video_state.tmp_dir / f"{video_state.vid}.info.json"
+        if info_json_file.exists():
+            try:
+                info_json_file.unlink()
+                LOG.info("Removed info.json file -> %s", info_json_file)
+            except Exception as exc:  # noqa: BLE001
+                LOG.warning("Failed to remove info.json %s (%s)", info_json_file, exc)
 
     if video_state.tmp_dir and video_state.vid:
         live_chat_file = video_state.tmp_dir / f"{video_state.vid}.live_chat.json"
