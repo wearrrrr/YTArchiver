@@ -35,8 +35,14 @@ This is a simple script to archive YouTube videos and channels!
    # Entire channel archive
    python3 dl.py channel @veritasium
 
+   # Videos only (excludes shorts and vods to save space)
+   python3 dl.py videos @veritasium
+
    # Shorts feed
    python3 dl.py shorts @veritasium
+
+   # Playlist download (videos will be organized into their respective channel folders)
+   python3 dl.py playlist PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf
 
    # Individual videos with a custom output directory
    python3 dl.py video dQw4w9WgXcQ jNQXAC9IVRw --out /data/archive

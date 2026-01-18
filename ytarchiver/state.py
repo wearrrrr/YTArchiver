@@ -52,10 +52,12 @@ class CurrentVideoState:
     channel_info: ChannelInfo = field(default_factory=ChannelInfo)
     current_stage: str = "Idle"
     stage_detail: str = ""
+    filter_videos_only: bool = False
 
-    def configure(self, output_root: Path, channel_info: ChannelInfo):
+    def configure(self, output_root: Path, channel_info: ChannelInfo, filter_videos_only: bool = False):
         self.output_root = output_root
         self.channel_info = channel_info
+        self.filter_videos_only = filter_videos_only
 
     def clear(self):
         self.tmp_file = None

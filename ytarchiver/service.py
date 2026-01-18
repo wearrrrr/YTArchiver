@@ -60,8 +60,10 @@ class ArchiveConfig:
     command: str
     handle: str | None = None
     video_ids: Sequence[str] = field(default_factory=list)
+    playlist_id: str | None = None
     out: str = "yt"
     no_cache: bool = False
+    filter_videos_only: bool = False
     log_file: str = "logs/ytarchiver.log"
     log_level: str = "INFO"
     clear_screen: bool = True
@@ -125,7 +127,10 @@ def _build_ydl_options(download_archive: Path | None, ytdlp_logger: logging.Logg
         "progress_hooks": [progress_hook],
         "logger": ytdlp_logger,
         "remote_components": ["ejs:github"],
-        "cookiesfrombrowser": ("brave", None, None, None)
+        # NOTE: Sometimes youtube requires this, when it's being especially mean
+        # If it is, uncomment this line, and change the "brave" to whatever browser you use.
+        # yt-dlp extracts the cookies for you, and effectively logs you in for the session.
+        # "cookiesfrombrowser": ("brave", None, None, None)
     }
 
     if download_archive:
@@ -156,7 +161,7 @@ def _apply_channel_meta(meta: dict | None):
 
 
 def _queue_tasks(config: ArchiveConfig) -> List[VideoTask]:
-    if config.command in {"channel", "shorts"}:
+    if config.command in {"channel", "shorts", "videos"}:
         if not config.handle:
             raise RuntimeError("A channel handle is required for this command.")
         handle = _normalize_handle(config.handle)
@@ -177,6 +182,28 @@ def _queue_tasks(config: ArchiveConfig) -> List[VideoTask]:
             raise RuntimeError("No valid video IDs or URLs provided.")
         tasks = fetch_tasks_for_video_ids(ids)
         LOG.info("Queued %s provided video(s).", len(tasks))
+        return tasks
+
+    if config.command == "playlist":
+        if not config.playlist_id:
+            raise RuntimeError("A playlist ID is required for this command.")
+        playlist_id = config.playlist_id.strip()
+        # Support both playlist IDs and full URLs
+        if "youtube.com" in playlist_id or "youtu.be" in playlist_id:
+            target_url = playlist_id
+        else:
+            # Remove common prefixes if present
+            if playlist_id.startswith(("PL", "UU", "FL", "RD", "OL")):
+                target_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+            else:
+                target_url = f"https://www.youtube.com/playlist?list={playlist_id}"
+        LOG.info("Fetching playlist: %s", target_url)
+        info, tasks = fetch_video_listing(target_url)
+        if not tasks:
+            raise RuntimeError(f"No videos found in playlist {target_url}")
+        # Extract playlist metadata but don't set channel_info (videos will use their own channels)
+        playlist_title = info.get("title") or "Unknown Playlist"
+        LOG.info("Queued %s video(s) from playlist '%s'", len(tasks), playlist_title)
         return tasks
 
     raise RuntimeError(f"Unsupported command: {config.command}")
@@ -259,7 +286,7 @@ def run_archive(
         output_root.mkdir(parents=True, exist_ok=True)
         if channel_meta is not None:
             _apply_channel_meta(channel_meta)
-        video_state.configure(output_root, channel_info)
+        video_state.configure(output_root, channel_info, config.filter_videos_only)
 
         download_archive = None if config.no_cache else output_root / "downloaded.txt"
         if download_archive:

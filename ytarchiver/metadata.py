@@ -21,7 +21,7 @@ class MetadataStore:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _init_schema(self) -> None:
+    def _init_schema(self):
         with self._connect() as conn:
             conn.execute(
                 """
@@ -61,13 +61,8 @@ class MetadataStore:
             )
             conn.commit()
 
-    def save_video_metadata(
-        self,
-        info: dict,
-        video_path: Path | str,
-        thumbnail_path: Optional[Path | str] = None,
-    ) -> None:
-        """Persist the metadata captured from a yt-dlp info dict."""
+    def save_video_metadata(self, info: dict, video_path: Path, thumbnail_path: Optional[Path] = None):
+        """Save comprehensive video metadata from yt-dlp info dict."""
         try:
             video_id = info.get("id", "")
             title = info.get("title", "")
@@ -99,14 +94,9 @@ class MetadataStore:
             all_sub_langs = list(set(list(subtitles.keys()) + list(auto_subs.keys())))
             subtitles_available = json.dumps(sorted(all_sub_langs))
 
+            # Remove large (unneeded) fields to try and keep it manageable.
             full_info = dict(info)
-            for key in [
-                "formats",
-                "thumbnails",
-                "subtitles",
-                "automatic_captions",
-                "requested_formats",
-            ]:
+            for key in ["formats", "thumbnails", "subtitles", "automatic_captions", "requested_formats"]:
                 full_info.pop(key, None)
             full_metadata = json.dumps(full_info, default=str)
 
@@ -123,30 +113,12 @@ class MetadataStore:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        video_id,
-                        title,
-                        uploader,
-                        upload_date,
-                        duration,
-                        view_count,
-                        like_count,
-                        comment_count,
-                        description,
-                        categories,
-                        tags,
-                        live_status,
-                        media_type,
-                        width,
-                        height,
-                        fps,
-                        video_codec,
-                        audio_codec,
-                        filesize,
-                        download_date,
-                        str(video_path),
-                        str(thumbnail_path) if thumbnail_path else None,
-                        subtitles_available,
-                        full_metadata,
+                        video_id, title, uploader, upload_date, duration,
+                        view_count, like_count, comment_count, description,
+                        categories, tags, live_status, media_type,
+                        width, height, fps, video_codec, audio_codec, filesize,
+                        download_date, str(video_path), str(thumbnail_path) if thumbnail_path else None,
+                        subtitles_available, full_metadata
                     ),
                 )
                 conn.commit()
@@ -154,14 +126,10 @@ class MetadataStore:
             LOG.info("Saved metadata for video %s to database", video_id)
 
         except Exception as exc:  # noqa: BLE001
-            LOG.error(
-                "Failed to save video metadata for %s: %s",
-                info.get("id", "unknown"),
-                exc,
-            )
+            LOG.error("Failed to save video metadata for %s: %s", info.get("id", "unknown"), exc)
 
     def get_video_metadata(self, video_id: str) -> Optional[dict]:
-        """Retrieve metadata for a single video."""
+        """Retrieve metadata for a specific video."""
         with self._connect() as conn:
             row = conn.execute(
                 "SELECT * FROM videos WHERE video_id = ?", (video_id,)
@@ -169,12 +137,11 @@ class MetadataStore:
 
         if not row:
             return None
+
         return dict(row)
 
-    def list_videos(
-        self, limit: Optional[int] = None, offset: int = 0
-    ) -> list[dict]:
-        """List videos ordered by newest upload date."""
+    def list_videos(self, limit: Optional[int] = None, offset: int = 0) -> list[dict]:
+        """List all videos in the database."""
         query = "SELECT * FROM videos ORDER BY upload_date DESC"
         params: list[Any] = []
 
@@ -188,11 +155,11 @@ class MetadataStore:
         return [dict(row) for row in rows]
 
     def get_stats(self) -> dict:
-        """Aggregate statistics about the archived collection."""
+        """Get statistics about the archived videos."""
         with self._connect() as conn:
             row = conn.execute(
                 """
-                SELECT 
+                SELECT
                     COUNT(*) as total_videos,
                     SUM(view_count) as total_views,
                     SUM(duration) as total_duration,

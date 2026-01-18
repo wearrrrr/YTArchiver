@@ -203,17 +203,20 @@ def _prepare_job_submission(data: Mapping[str, Any] | dict[str, Any] | None):
         return None, None, "Missing submission payload."
 
     command = _coerce_str(data.get("command")).lower()
-    if command not in {"channel", "shorts", "video"}:
+    if command not in {"channel", "shorts", "videos", "video", "playlist"}:
         return None, None, "Invalid command selected."
 
     handle = _coerce_str(data.get("handle")) or None
     raw_video_ids = _coerce_video_field(data.get("video_ids"))
     video_ids = _parse_video_ids(raw_video_ids)
+    playlist_id = _coerce_str(data.get("playlist_id")) or None
 
-    if command in {"channel", "shorts"} and not handle:
-        return None, None, "A channel handle is required for channel/shorts modes."
+    if command in {"channel", "shorts", "videos"} and not handle:
+        return None, None, "A channel handle is required for channel/shorts/videos modes."
     if command == "video" and not video_ids:
         return None, None, "Provide at least one video ID or URL."
+    if command == "playlist" and not playlist_id:
+        return None, None, "A playlist ID or URL is required for playlist mode."
 
     out_dir = _coerce_str(data.get("out") or "yt") or "yt"
     log_file_input = _coerce_str(data.get("log_file"))
@@ -223,8 +226,10 @@ def _prepare_job_submission(data: Mapping[str, Any] | dict[str, Any] | None):
         command=command,
         handle=handle,
         video_ids=video_ids,
+        playlist_id=playlist_id,
         out=out_dir,
         no_cache=_coerce_bool(data.get("no_cache")),
+        filter_videos_only=command == "videos",
         log_file=log_file_input or "logs/webui-placeholder.log",
         log_level=log_level.upper(),
         clear_screen=not _coerce_bool(data.get("no_clear")),

@@ -36,6 +36,16 @@ def on_postprocess(info: dict):
     video_state.tmp_dir = video_state.tmp_file.parent
     folder = categorize(data)
 
+    if video_state.filter_videos_only and folder in ("shorts", "vods"):
+        LOG.info("Skipping %s (filter_videos_only enabled): %s", folder, data.get("id", ""))
+        try:
+            if video_state.tmp_file and video_state.tmp_file.exists():
+                video_state.tmp_file.unlink()
+                LOG.debug("Deleted filtered file: %s", video_state.tmp_file)
+        except Exception as exc:  # noqa: BLE001
+            LOG.warning("Failed to delete filtered file %s (%s)", video_state.tmp_file, exc)
+        return
+
     raw_date = data.get("upload_date")
     date = datetime.strptime(raw_date, "%Y%m%d").strftime("%m-%d-%y") if raw_date else "unknown-date"
 
@@ -75,6 +85,7 @@ def on_postprocess(info: dict):
             for ext in ['.jpg', '.png', '.webp']:
                 thumb = video_state.tmp_dir / f"{video_state.vid}{ext}"
                 if thumb.exists():
+                    # Copy thumbnail to video directory (don't move, since it's embedded in mkv)
                     new_thumb_path = video_dir / f"thumbnail{ext}"
                     try:
                         shutil.copy2(str(thumb), str(new_thumb_path))
@@ -90,7 +101,7 @@ def on_postprocess(info: dict):
     except Exception as exc:  # noqa: BLE001
         LOG.error("Failed to save metadata for %s (%s)", video_state.vid, exc)
 
-    # Clean up .info.json file
+
     if video_state.tmp_dir and video_state.vid:
         info_json_file = video_state.tmp_dir / f"{video_state.vid}.info.json"
         if info_json_file.exists():

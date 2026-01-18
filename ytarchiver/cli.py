@@ -46,11 +46,17 @@ def build_parser() -> argparse.ArgumentParser:
     channel_parser = subparsers.add_parser("channel", help="Download every upload from a channel handle")
     channel_parser.add_argument("handle", help="YouTube channel handle (with or without @)")
 
+    videos_parser = subparsers.add_parser("videos", help="Download only regular videos from a channel (no shorts/vods)")
+    videos_parser.add_argument("handle", help="YouTube channel handle (with or without @)")
+
     shorts_parser = subparsers.add_parser("shorts", help="Download the Shorts feed for a channel handle")
     shorts_parser.add_argument("handle", help="YouTube channel handle (with or without @)")
 
     video_parser = subparsers.add_parser("video", help="Download one or more individual videos")
     video_parser.add_argument("video_ids", nargs="+", help="Video IDs or URLs")
+
+    playlist_parser = subparsers.add_parser("playlist", help="Download all videos from a playlist")
+    playlist_parser.add_argument("playlist_id", help="Playlist ID or URL")
 
     watch_parser = subparsers.add_parser("watch", help="Run the background daemon to monitor channels")
     watch_parser.add_argument("--poll-interval", type=int, default=300, help="Seconds between watchlist checks (default: %(default)s)")
@@ -84,8 +90,10 @@ def main():
         command=args.command,
         handle=getattr(args, "handle", None),
         video_ids=getattr(args, "video_ids", []) or [],
+        playlist_id=getattr(args, "playlist_id", None),
         out=args.out,
         no_cache=args.no_cache,
+        filter_videos_only=args.command == "videos",
         log_file=args.log_file,
         log_level=args.log_level,
         clear_screen=not args.no_clear,

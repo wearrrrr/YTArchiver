@@ -75,7 +75,9 @@
                     <label>Mode</label>
                     <div class="option-row">
                         <label><input type="radio" name="command" value="channel" checked /> Channel</label>
+                        <label><input type="radio" name="command" value="videos" /> Videos only</label>
                         <label><input type="radio" name="command" value="shorts" /> Shorts</label>
+                        <label><input type="radio" name="command" value="playlist" /> Playlist</label>
                         <label><input type="radio" name="command" value="video" /> Video list</label>
                     </div>
                 </div>
@@ -85,7 +87,12 @@
                     <input type="text" id="handle" name="handle" placeholder="@example" />
                 </div>
 
-                <div class="field-group" id="video-group">
+                <div class="field-group" id="playlist-group" style="display: none;">
+                    <label for="playlist_id">Playlist ID or URL</label>
+                    <input type="text" id="playlist_id" name="playlist_id" placeholder="PLrAXtmErZgOeiKm4sgNOknGvNjby9efdf or full URL" />
+                </div>
+
+                <div class="field-group" id="video-group" style="display: none;">
                     <label for="video_ids">Video IDs / URLs (comma or newline separated)</label>
                     <textarea id="video_ids" name="video_ids" rows="3" placeholder="dQw4w9WgXcQ"></textarea>
                 </div>
@@ -210,6 +217,7 @@
         (() => {
             const modeInputs = document.querySelectorAll('input[name="command"]');
             const handleGroup = document.getElementById('handle-group');
+            const playlistGroup = document.getElementById('playlist-group');
             const videoGroup = document.getElementById('video-group');
             const jobRows = document.getElementById('job-rows');
             const emptyNote = document.getElementById('job-empty-note');
@@ -260,7 +268,10 @@
                 if (!selected) { return; }
                 const mode = selected.value;
                 if (handleGroup) {
-                    handleGroup.style.display = mode === 'video' ? 'none' : 'block';
+                    handleGroup.style.display = (mode === 'video' || mode === 'playlist') ? 'none' : 'block';
+                }
+                if (playlistGroup) {
+                    playlistGroup.style.display = mode === 'playlist' ? 'block' : 'none';
                 }
                 if (videoGroup) {
                     videoGroup.style.display = mode === 'video' ? 'block' : 'none';
@@ -298,6 +309,9 @@
                     const suffix = total === 1 ? '' : 's';
                     return `${total} video${suffix}`;
                 }
+                if (job.command === 'playlist') {
+                    return job.playlist_id || 'Playlist';
+                }
                 return job.handle || 'n/a';
             }
 
@@ -325,7 +339,7 @@
                 if (!target) { return; }
                 STATUS_CLASSES.forEach((cls) => target.classList.remove(cls));
                 target.classList.add(status);
-
+                
                 // Calculate overall progress percentage
                 let progressPercent = 0;
                 if (status === 'running' && job && job.progress) {
@@ -338,9 +352,11 @@
                         progressPercent = progress.percent;
                     }
                 }
-
+                
+                // Set progress bar width
                 target.style.setProperty('--progress', progressPercent + '%');
-
+                
+                // Update text content
                 if (status === 'running' && progressPercent > 0) {
                     target.innerHTML = '<span class="status-text">' + status.charAt(0).toUpperCase() + status.slice(1) + ' ' + progressPercent + '%</span>';
                 } else {
@@ -366,11 +382,11 @@
                     button.dataset.jobId = job.id;
                     button.dataset.action = def.action;
                     button.title = def.label;
-
+                    
                     const icon = document.createElement('i');
                     icon.className = 'fa-solid ' + def.icon;
                     button.appendChild(icon);
-
+                    
                     if (pendingCommands.has(controlKey(job.id, def.action))) {
                         button.disabled = true;
                     }
@@ -396,7 +412,7 @@
                     '<td class="control-cell"><div class="control-group" data-controls></div></td>' +
                     '<td><button type="button" class="log-btn" data-log-button data-job-id="' + job.id + '">View log</button></td>' +
                     '<td data-role="api"><a href="' + window.location.origin + '/jobs/' + job.id + '.json" target="_blank" rel="noopener">JSON</a></td>';
-                jobRows.insertBefore(row, jobRows.firstChild);
+                jobRows.appendChild(row);
                 if (emptyNote) {
                     emptyNote.hidden = true;
                 }
@@ -404,8 +420,11 @@
             }
 
             function updateRow(job) {
+                let existingRow = document.getElementById('job-' + job.id);
+                const oldStatus = existingRow ? existingRow.dataset.status : null;
                 const row = ensureRow(job);
                 if (!row) { return; }
+                const statusChanged = oldStatus && oldStatus !== job.status;
                 row.dataset.status = job.status;
                 const short = row.querySelector('[data-role="short-id"]');
                 if (short) {
@@ -444,6 +463,55 @@
                 }
                 const controls = row.querySelector('[data-controls]');
                 renderControls(controls, job);
+                
+                // If status changed to running/queued/paused, reposition the row
+                if (statusChanged && jobRows && (job.status === 'running' || job.status === 'queued' || job.status === 'paused')) {
+                    repositionRow(row, job);
+                }
+            }
+
+            function repositionRow(row, job) {
+                if (!jobRows || !row) { return; }
+                
+                // Priority order: running (0), queued (1), paused (2), others (3)
+                const getPriority = (status) => {
+                    if (status === 'running') return 0;
+                    if (status === 'queued') return 1;
+                    if (status === 'paused') return 2;
+                    return 3;
+                };
+                
+                const currentPriority = getPriority(job.status);
+                const currentTimestamp = job.updated || job.created || '';
+                
+                // Find the correct position to insert this row
+                let insertBefore = null;
+                for (const existingRow of jobRows.children) {
+                    const existingJobId = existingRow.dataset.jobId;
+                    const existingJob = jobState.get(existingJobId);
+                    if (!existingJob) continue;
+                    
+                    const existingPriority = getPriority(existingJob.status);
+                    const existingTimestamp = existingJob.updated || existingJob.created || '';
+                    
+                    // If existing has lower priority (higher number), insert before it
+                    if (existingPriority > currentPriority) {
+                        insertBefore = existingRow;
+                        break;
+                    }
+                    // If same priority but older timestamp, insert before it
+                    if (existingPriority === currentPriority && existingTimestamp < currentTimestamp) {
+                        insertBefore = existingRow;
+                        break;
+                    }
+                }
+                
+                // Remove and reinsert at the correct position
+                if (insertBefore) {
+                    jobRows.insertBefore(row, insertBefore);
+                } else {
+                    jobRows.appendChild(row);
+                }
             }
 
             function removeJob(jobId) {

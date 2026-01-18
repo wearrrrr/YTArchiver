@@ -4,3 +4,8 @@ yt/
 logs/
 **/**/__pycache__/
 **/**/*.pyc
+*.part
+*.srv3
+*.info.json
+*.live_chat.json
+*.webp

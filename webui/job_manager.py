@@ -66,8 +66,10 @@ def _config_to_dict(config: ArchiveConfig) -> dict:
 		"command": config.command,
 		"handle": config.handle,
 		"video_ids": list(config.video_ids or []),
+		"playlist_id": config.playlist_id,
 		"out": config.out,
 		"no_cache": config.no_cache,
+		"filter_videos_only": config.filter_videos_only,
 		"log_file": config.log_file,
 		"log_level": config.log_level,
 		"clear_screen": config.clear_screen,
@@ -79,8 +81,10 @@ def _config_from_dict(payload: dict) -> ArchiveConfig:
 		command=payload.get("command", "channel"),
 		handle=payload.get("handle"),
 		video_ids=payload.get("video_ids") or [],
+		playlist_id=payload.get("playlist_id"),
 		out=payload.get("out", "yt"),
 		no_cache=bool(payload.get("no_cache")),
+		filter_videos_only=bool(payload.get("filter_videos_only")),
 		log_file=payload.get("log_file", "logs/ytarchiver.log"),
 		log_level=payload.get("log_level", "INFO"),
 		clear_screen=bool(payload.get("clear_screen", True)),
@@ -129,7 +133,7 @@ class JobManager:
 			progress.setdefault("updated", _utc_now())
 			item["progress"] = progress
 			item.setdefault("next_index", 1)
-			item.setdefault("resume_supported", item.get("command") in {"channel", "shorts"})
+			item.setdefault("resume_supported", item.get("command") in {"channel", "shorts", "videos"})
 			item.setdefault("tasks", [])
 			item.setdefault("video_count", len(item.get("tasks") or []))
 			self.jobs[job_id] = item
@@ -175,7 +179,47 @@ class JobManager:
 
 	def list_jobs(self) -> list[dict]:
 		with self.lock:
-			return [self._job_payload(job) for job in sorted(self.jobs.values(), key=lambda item: item.get("created"), reverse=True)]
+			# Sort by status priority first (running/queued at top), then by updated timestamp (newest first)
+			def sort_key(item):
+				status = item.get("status", "")
+				# Priority order: running (0), queued (1), paused (2), others (3)
+				if status == "running":
+					priority = 0
+				elif status == "queued":
+					priority = 1
+				elif status == "paused":
+					priority = 2
+				else:
+					priority = 3
+				# Within same priority, sort by most recently updated (reverse chronological)
+				# ISO timestamps like "2026-01-17T10:30:00.123456" sort correctly as strings
+				# Invert for reverse order: newer timestamps should come first
+				timestamp_str = item.get("updated", item.get("created", ""))
+				# Use a tuple: (priority ascending, timestamp descending)
+				# Trick: prepend '~' to make string sort in reverse (larger chars come first in reverse)
+				# Better: just negate the string comparison by using a reversed wrapper
+				return (priority, timestamp_str)
+			
+			# Sort by priority (ascending), then by timestamp (descending)
+			jobs_sorted = sorted(
+				self.jobs.values(),
+				key=lambda item: (
+					sort_key(item)[0],        # priority: 0=running, 1=queued, 2=paused, 3=others
+					sort_key(item)[1]          # timestamp string
+				),
+				reverse=False  # Don't reverse the whole thing
+			)
+			
+			# Now reverse the timestamp order within each priority group
+			from itertools import groupby
+			result = []
+			for priority, group in groupby(jobs_sorted, key=lambda item: sort_key(item)[0]):
+				# Within this priority group, reverse by timestamp (newest first)
+				group_list = list(group)
+				group_list.sort(key=lambda item: item.get("updated", item.get("created", "")), reverse=True)
+				result.extend(group_list)
+			
+			return [self._job_payload(job) for job in result]
 
 	def get_job(self, job_id: str) -> dict | None:
 		with self.lock:
@@ -217,17 +261,17 @@ class JobManager:
 		job_record = {
 			"id": job_id,
 			"config": _config_to_dict(config),
-			"status": "queued",
-			"error": None,
-			"log_file": str(log_path),
-			"created": _utc_now(),
-			"updated": _utc_now(),
-			"progress": progress,
-			"tasks": [serialize_video_task(task) for task in tasks],
-			"next_index": 1,
-			"resume_supported": config.command in {"channel", "shorts"},
-			"channel_meta": channel_meta,
-			"command": config.command,
+		"status": "queued",
+		"error": None,
+		"log_file": str(log_path),
+		"created": _utc_now(),
+		"updated": _utc_now(),
+		"progress": progress,
+		"tasks": [serialize_video_task(task) for task in tasks],
+		"next_index": 1,
+		"resume_supported": config.command in {"channel", "shorts", "videos"},
+		"channel_meta": channel_meta,
+		"command": config.command,
 			"handle": config.handle,
 			"video_ids": list(config.video_ids or []),
 			"video_count": len(tasks) or len(config.video_ids or []),
